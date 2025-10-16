@@ -51,7 +51,7 @@ func main() {
 	api.HandleFunc("/register", register).Methods("POST", "OPTIONS")
 
 	// ================= USER ROUTES =================
-	api.HandleFunc("/products1", authenticateJWT(getProductsHandler)).Methods("GET", "OPTIONS")
+	api.HandleFunc("/products1", getProductsHandler).Methods("GET", "OPTIONS")
 	// api.HandleFunc("/products", authenticateJWT(getProductsHandler)).Methods("GET", "OPTIONS")
 	api.HandleFunc("/orders", authenticateJWT(createOrderHandler)).Methods("POST", "OPTIONS")
 	api.HandleFunc("/orders", authenticateJWT(getOrdersHandler)).Methods("GET", "OPTIONS")

@@ -520,13 +520,12 @@ func DeleteCategoryItem(id uint) bool {
 func CreateUser(req RegisterUserRequest) User {
 	hashedPassword, _ := hashPassword(req.Password)
 	user := User{
-		ID:         nextUserID,
-		Name:       req.Name,
-		Phone:      req.Phone,
-		CategoryID: req.CategoryID,
-		Password:   hashedPassword,
-		IsAdmin:    false,
-		FilialID:   uint(req.FilialID),
+		ID:       nextUserID,
+		Name:     req.Name,
+		Phone:    req.Phone,
+		Password: hashedPassword,
+		IsAdmin:  false,
+		FilialID: uint(req.FilialID),
 	}
 	users = append(users, user)
 	nextUserID++

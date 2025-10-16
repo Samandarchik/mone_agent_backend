@@ -598,63 +598,14 @@ func deleteCategoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ================= PRODUCTS ROUTES =================
-// GET /api/products (User uchun o'z filialidagi mahsulotlar va ruxsat etilgan kategoriyalar bo'yicha)
 func getProductsHandler(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.Header.Get("User-ID")
-	userID, _ := strconv.Atoi(userIDStr)
-
-	user := findUserByID(uint(userID))
-	if user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Message: "User topilmadi",
-		})
-		return
-	}
-
-	if user.FilialID == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(GroupedProductsResponse{
-			Success: false,
-			Message: "Sizga filial belgilanmagan",
-			Data:    make(map[string][]ProductSimple),
-		})
-		return
-	}
-
-	// 1️⃣ Ruxsat etilgan kategoriyalarni set (map) qilib olamiz
-	allowedCategories := make(map[uint]bool)
-	for _, catID := range user.CategoryID { // masalan, []uint{1,3,5}
-		allowedCategories[catID] = true
-	}
-
-	var filteredProducts []Product
-	for _, product := range products {
-		// Avvalo filial bo‘yicha filterlaymiz
-		for _, fId := range product.Filials {
-			if fId == user.FilialID {
-				// 2️⃣ Shu mahsulot kategoriyasi ruxsat etilganmi tekshiramiz
-				if len(allowedCategories) > 0 && !allowedCategories[product.CategoryID] {
-					// Ruxsat yo‘q — bu mahsulotni o‘tkazib yuboramiz
-					continue
-				}
-
-				filteredProducts = append(filteredProducts, product)
-				break
-			}
-		}
-	}
+	w.Header().Set("Content-Type", "application/json")
 
 	groupedData := make(map[string][]ProductSimple)
-	for _, product := range filteredProducts {
-		// category ni topamiz
+
+	for _, product := range products {
 		category := findCategoryByID(product.CategoryID)
 		if category == nil || category.Name == "" {
-			// Agar category topilmasa yoki name bo'sh bo'lsa, umuman qo'shmaymiz
 			continue
 		}
 
@@ -667,16 +618,9 @@ func getProductsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	message := "Mahsulotlar olindi"
-	if filial := findFilialByID(user.FilialID); filial != nil {
-		message = fmt.Sprintf("%s filiali mahsulotlari", filial.Name)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(GroupedProductsResponse{
 		Success: true,
-		Message: message,
+		Message: "Barcha mahsulotlar olindi",
 		Data:    groupedData,
 	})
 }
@@ -697,15 +641,24 @@ func getAllProductsHandler(w http.ResponseWriter, r *http.Request) {
 			FilialNames: []string{},
 		}
 
-		if category := findCategoryByID(product.CategoryID); category != nil {
+		// Kategoriya mavjud bo‘lmasa ham "Unknown" deb beramiz
+		if category := findCategoryByID(product.CategoryID); category != nil && category.Name != "" {
 			details.CategoryName = category.Name
 		} else {
 			details.CategoryName = "Unknown"
 		}
 
-		for _, filialID := range product.Filials {
-			if filial := findFilialByID(filialID); filial != nil {
-				details.FilialNames = append(details.FilialNames, filial.Name)
+		// Filiallar mavjud bo‘lmasa ham, bo‘sh massiv sifatida qoladi
+		if len(product.Filials) == 0 {
+			details.FilialNames = []string{"Unknown"}
+		} else {
+			for _, filialID := range product.Filials {
+				if filial := findFilialByID(filialID); filial != nil && filial.Name != "" {
+					details.FilialNames = append(details.FilialNames, filial.Name)
+				} else {
+					// Agar filial topilmasa, "Unknown" deb yozamiz
+					details.FilialNames = append(details.FilialNames, "Unknown")
+				}
 			}
 		}
 
@@ -716,7 +669,7 @@ func getAllProductsHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(Response{
 		Success: true,
-		Message: fmt.Sprintf("Jami %d ta mahsulot", len(productList)),
+		Message: fmt.Sprintf("Jami %d ta mahsulot topildi", len(productList)),
 		Data:    productList,
 	})
 }
