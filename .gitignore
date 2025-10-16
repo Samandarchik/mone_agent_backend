@@ -1,0 +1,28 @@
+# Barcha data papkasini e'tiborsiz qoldirish
+data/
+
+# Agar data ichida bitta faylni saqlash kerak bo'lsa, misol uchun README.md:
+# !data/README.md
+
+# VSCode va boshqa IDE konfiguratsiya fayllarini ham yubormaslik tavsiya qilinadi:
+.vscode/
+.idea/
+
+# OS va cache fayllarini e'tiborsiz qoldirish
+.DS_Store
+Thumbs.db
+
+# Python cache va virtualenv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+
+# Go build fayllari
+bin/
+*.exe
+*.out
+*.test
+uploads/

@@ -1,0 +1,25 @@
+# docker-compose.yml
+# version: '3.8'
+
+services:
+  mone_admin_backend:
+    build: .
+    ports:
+      - "1010:1010"
+    volumes:
+      - ./data:/root/data
+    environment:
+      - JWT_SECRET_KEY=your-production-secret-key-change-this
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:1010/health"]
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mone_network
+
+networks:
+  mone_network:
+    driver: bridge
+

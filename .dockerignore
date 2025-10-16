@@ -1,0 +1,13 @@
+# .dockerignore
+.git
+.gitignore
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+*.log
+.DS_Store
+*.tmp
+*.swp
+.env
+node_modules/
