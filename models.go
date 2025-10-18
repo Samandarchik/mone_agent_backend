@@ -32,13 +32,14 @@ type Category struct {
 }
 
 type User struct {
-	ID         uint   `json:"id"`
-	Name       string `json:"name"`
-	Phone      string `json:"phone"`
-	Password   string `json:"password"`
-	IsAdmin    bool   `json:"is_admin"`
-	FilialID   uint   `json:"filial_id"`
-	CategoryID []uint `json:"category_list"`
+	ID         uint    `json:"id"`
+	Name       string  `json:"name"`
+	Phone      string  `json:"phone"`
+	Password   string  `json:"password"`
+	IsAdmin    bool    `json:"is_admin"`
+	Long       float64 `json:"long"`
+	Lat        float64 `json:"lat"`
+
 }
 
 type Product struct {
@@ -151,9 +152,9 @@ type UpdateUserRequest struct {
 }
 
 type CreateOrderRequest struct {
-	Comment      string            `json:"comment"`
-	SentDataTime string            `json:"sent_data_time"`
-	Items        []CreateOrderItem `json:"items"`
+	Comment string `json:"comment"`
+	// SentDataTime string            `json:"sent_data_time"`
+	Items []CreateOrderItem `json:"items"`
 }
 
 type CreateOrderItem struct {

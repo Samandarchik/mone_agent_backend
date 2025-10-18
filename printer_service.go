@@ -68,7 +68,7 @@ func sendToTelegram(order *Order, categoryItems map[uint][]PrinterItem, printerS
 	}
 
 	telegramMsg := TelegramMessage{
-		ChatID:    "-4985547344",
+		ChatID:    "-1003173379469",
 		Text:      message.String(),
 		ParseMode: "Markdown",
 	}

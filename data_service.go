@@ -25,11 +25,12 @@ const categoryItemsFile = "data/category_items.json"
 
 // Global data
 var (
-	filials    []Filial
-	categories []Category
-	users      []User
-	products   []Product
-	orders     []Order
+	filials      []Filial
+	categories   []Category
+	sentDatatime []string
+	users        []User
+	products     []Product
+	orders       []Order
 
 	nextFilialID   uint = 1
 	nextCategoryID uint = 1
@@ -43,12 +44,13 @@ var (
 
 // File paths
 const (
-	dataDir        = "data"
-	filialsFile    = "data/filials.json"
-	categoriesFile = "data/categories.json"
-	usersFile      = "data/users.json"
-	productsFile   = "data/products.json"
-	ordersFile     = "data/orders.json"
+	dataDir          = "data"
+	filialsFile      = "data/filials.json"
+	categoriesFile   = "data/categories.json"
+	usersFile        = "data/users.json"
+	productsFile     = "data/products.json"
+	ordersFile       = "data/orders.json"
+	sentDatatimeFile = "data/sent_datatime.json"
 )
 
 // Data initialization
@@ -148,6 +150,7 @@ func saveData() {
 	saveUsers()
 	saveProducts()
 	saveOrders()
+	saveSentDataTime()
 }
 
 func saveFilials() {
@@ -158,6 +161,10 @@ func saveFilials() {
 func saveCategories() {
 	data, _ := json.MarshalIndent(categories, "", "  ")
 	ioutil.WriteFile(categoriesFile, data, 0644)
+}
+func saveSentDataTime() {
+	data, _ := json.MarshalIndent(sentDatatime, "", "  ")
+	ioutil.WriteFile(sentDatatimeFile, data, 0644)
 }
 
 func saveUsers() {
@@ -610,10 +617,10 @@ func CreateOrder(userID uint, req CreateOrderRequest) (*Order, error) {
 	}
 
 	order := Order{
-		ID:         nextOrderID,
-		OrderID:    generateOrderID(),
-		Comment:    req.Comment,
-		SentDataTime: req.SentDataTime,
+		ID:      nextOrderID,
+		OrderID: generateOrderID(),
+		Comment: req.Comment,
+		// SentDataTime: req.SentDataTime,
 		UserID:     userID,
 		Username:   user.Name,
 		FilialID:   user.FilialID,

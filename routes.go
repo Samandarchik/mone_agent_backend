@@ -1138,6 +1138,7 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if orderPtr := findOrderByID(order.ID); orderPtr != nil {
 			orderPtr.Comment = order.Comment
+			orderPtr.SentDataTime = order.SentDataTime
 			orderPtr.Status = "sent_to_printer"
 			orderPtr.Updated = time.Now()
 			saveData()
