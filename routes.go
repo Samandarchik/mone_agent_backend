@@ -1137,6 +1137,7 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if orderPtr := findOrderByID(order.ID); orderPtr != nil {
+			orderPtr.Comment = order.Comment
 			orderPtr.Status = "sent_to_printer"
 			orderPtr.Updated = time.Now()
 			saveData()
@@ -1145,6 +1146,7 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusOK
 		response = Response{
 			Success: true,
+			Comment: order.Comment,
 			Message: fmt.Sprintf("Order yaratildi va chek yuborildi (%s - %s) - Order ID: %s", order.Username, order.FilialName, order.OrderID),
 			Data:    order,
 		}

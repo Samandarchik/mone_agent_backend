@@ -79,7 +79,7 @@ func main() {
 	api.HandleFunc("/products/{id:[0-9]+}", requireAdmin(deleteProductHandler)).Methods("DELETE", "OPTIONS")
 
 	// Users
-	api.HandleFunc("/users", requireAdmin(getUsersHandler)).Methods("GET", "OPTIONS")
+	api.HandleFunc("/users", getUsersHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/users/{id:[0-9]+}", requireAdmin(getUserHandler)).Methods("GET", "OPTIONS")
 	api.HandleFunc("/users/{id:[0-9]+}", requireAdmin(updateUserHandler)).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/users/{id:[0-9]+}", requireAdmin(deleteUserHandler)).Methods("DELETE", "OPTIONS")
@@ -106,7 +106,7 @@ func main() {
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("uploads"))))
 
 	// Run server
-	log.Fatal(http.ListenAndServe(":1010", r))
+	log.Fatal(http.ListenAndServe(":1313", r))
 }
 
 //////////////////////////////////////////////////////

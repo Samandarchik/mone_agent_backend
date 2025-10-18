@@ -45,7 +45,7 @@ RUN mkdir -p /root/uploads
 VOLUME ["/root/data", "/root/uploads"]
 
 # Portni ochish
-EXPOSE 1010
+EXPOSE 1313
 
 # Serverni ishga tushirish
 CMD ["./main"]

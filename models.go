@@ -16,9 +16,12 @@ type Claims struct {
 
 // Core Models
 type Filial struct {
-	ID       uint   `json:"id"`
-	Name     string `json:"name"`
-	Location string `json:"location"`
+	ID       uint    `json:"id"`
+	Name     string  `json:"name"`
+	Phone    string  `json:"phone"`
+	Location string  `json:"location"`
+	Long     float64 `json:"long"`
+	Lat      float64 `json:"lat"`
 }
 
 type Category struct {
@@ -49,17 +52,19 @@ type Product struct {
 }
 
 type Order struct {
-	ID         uint        `json:"id"`
-	OrderID    string      `json:"order_id"`
-	UserID     uint        `json:"user_id"`
-	Username   string      `json:"username"`
-	FilialID   uint        `json:"filial_id"`
-	FilialName string      `json:"filial_name"`
-	Items      []OrderItem `json:"items"`
-	Total      float64     `json:"total"`
-	Status     string      `json:"status"`
-	Created    time.Time   `json:"created"`
-	Updated    time.Time   `json:"updated"`
+	ID           uint        `json:"id"`
+	OrderID      string      `json:"order_id"`
+	UserID       uint        `json:"user_id"`
+	Username     string      `json:"username"`
+	FilialID     uint        `json:"filial_id"`
+	FilialName   string      `json:"filial_name"`
+	Items        []OrderItem `json:"items"`
+	Total        float64     `json:"total"`
+	Status       string      `json:"status"`
+	Comment      string      `json:"comment"`
+	SentDataTime string      `json:"sent_data_time"`
+	Created      time.Time   `json:"created"`
+	Updated      time.Time   `json:"updated"`
 }
 
 type OrderItem struct {
@@ -85,13 +90,19 @@ type RegisterUserRequest struct {
 }
 
 type AddFilialRequest struct {
-	Name     string `json:"name"`
-	Location string `json:"location"`
+	Name     string  `json:"name"`
+	Location string  `json:"location"`
+	Phone    string  `json:"phone"`
+	Long     float64 `json:"long"`
+	Lat      float64 `json:"lat"`
 }
 
 type UpdateFilialRequest struct {
-	Name     string `json:"name"`
-	Location string `json:"location"`
+	Name     string  `json:"name"`
+	Location string  `json:"location"`
+	Phone    string  `json:"phone"`
+	Long     float64 `json:"long"`
+	Lat      float64 `json:"lat"`
 }
 
 type AddCategoryRequest struct {
@@ -140,7 +151,9 @@ type UpdateUserRequest struct {
 }
 
 type CreateOrderRequest struct {
-	Items []CreateOrderItem `json:"items"`
+	Comment      string            `json:"comment"`
+	SentDataTime string            `json:"sent_data_time"`
+	Items        []CreateOrderItem `json:"items"`
 }
 
 type CreateOrderItem struct {
@@ -157,6 +170,7 @@ type PrinterRequest struct {
 	Category string        `json:"category"`
 	Username string        `json:"username"`
 	OrderID  string        `json:"order_id"`
+	Comment  string        `json:"comment"`
 	Filial   string        `json:"filial"`
 	Items    []PrinterItem `json:"items"`
 }
@@ -170,6 +184,7 @@ type PrinterItem struct {
 type Response struct {
 	Success bool        `json:"success"`
 	Message string      `json:"message"`
+	Comment string      `json:"comment"`
 	Data    interface{} `json:"data,omitempty"`
 }
 

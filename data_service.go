@@ -612,6 +612,8 @@ func CreateOrder(userID uint, req CreateOrderRequest) (*Order, error) {
 	order := Order{
 		ID:         nextOrderID,
 		OrderID:    generateOrderID(),
+		Comment:    req.Comment,
+		SentDataTime: req.SentDataTime,
 		UserID:     userID,
 		Username:   user.Name,
 		FilialID:   user.FilialID,

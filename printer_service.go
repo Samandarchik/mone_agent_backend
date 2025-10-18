@@ -161,6 +161,7 @@ func sendToPrinter(order *Order) error {
 			OrderID:  order.OrderID,
 			Category: categoryList, // shu printerga tegishli barcha kategoriyalar
 			Username: order.Username,
+			Comment:  order.Comment,
 			Filial:   order.FilialName,
 			Items:    items,
 		}
