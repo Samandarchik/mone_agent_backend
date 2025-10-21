@@ -19,7 +19,7 @@ __pycache__/
 *.pyd
 .env
 venv/
-
+/order_system.db
 # Go build fayllari
 bin/
 *.exe
