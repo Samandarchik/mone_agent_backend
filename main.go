@@ -1326,7 +1326,7 @@ func SetupRoutes(router *gin.Engine) {
 	}
 
 	sms := api.Group("/sms")
-	sms.Use(AuthMiddleware())
+	sms.Use()
 	{
 		sms.GET("/pending", GetPendingSMS)
 		sms.POST("/sent/:phone", MarkSMSSent)
