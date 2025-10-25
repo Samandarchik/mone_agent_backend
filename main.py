@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Excel Print Server
-Version: 2.3 - Fixed Printer Selection
+Version: 2.4 - Restoran Buyurtmalari
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -216,7 +216,425 @@ def create_excel_file(items, username=None, filial=None, order_id=None, category
     except Exception as e:
         print(f"❌ Ошибка при создании Excel: {e}")
         return None, None
-
+def create_restoran_excel(data):
+    """Создание Excel для ресторанного заказа"""
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Заказ"
+        
+        # Настройки страницы
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        
+        ws.page_margins = PageMargins(
+            left=0.2, right=0.2, top=0.2, bottom=0.2,
+            header=0.3, footer=0.3
+        )
+        
+        # Стили
+        title_font = Font(name='Arial', size=16, bold=True)
+        header_font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
+        normal_font = Font(name='Arial', size=11)
+        info_font = Font(name='Arial', size=12, bold=True)
+        
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Получение данных клиента
+        client = data.get('client', {})
+        client_name = client.get('username', 'N/A')
+        client_phone = client.get('number', 'N/A')
+        client_location = client.get('location', 'N/A')
+        comment = data.get('comment', '')
+        sent_time = data.get('sentToOrders', '')
+        order_id = data.get('id', 'N/A')
+        
+        # Заголовок с username
+        ws['A1'] = f'РЕСТОРАН: {client_name}'
+        ws['A1'].font = title_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        ws.merge_cells('A1:C1')
+        
+        row = 3
+        
+        # Форматирование времени
+        if sent_time:
+            try:
+                from dateutil import parser
+                dt = parser.parse(sent_time)
+                formatted_time = dt.strftime('%d-%B в %H:%M')
+                # Перевод месяца на русский
+                months_ru = {
+                    'January': 'января', 'February': 'февраля', 'March': 'марта',
+                    'April': 'апреля', 'May': 'мая', 'June': 'июня',
+                    'July': 'июля', 'August': 'августа', 'September': 'сентября',
+                    'October': 'октября', 'November': 'ноября', 'December': 'декабря'
+                }
+                for eng, ru in months_ru.items():
+                    formatted_time = formatted_time.replace(eng, ru)
+            except:
+                # Если нет dateutil, простой формат
+                try:
+                    dt = datetime.fromisoformat(sent_time.replace('Z', '+00:00'))
+                    formatted_time = dt.strftime('%d-%m-%Y в %H:%M')
+                except:
+                    formatted_time = sent_time
+        else:
+            formatted_time = 'N/A'
+        
+        # ID заказа
+        if order_id:
+            ws[f'A{row}'] = 'ID Заказа:  ' + order_id
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Телефон
+        if client_phone:
+            ws[f'A{row}'] = 'Телефон:  ' + client_phone
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Адрес
+        if client_location:
+            ws[f'A{row}'] = 'Адрес:  ' + client_location
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Время доставки
+        if formatted_time:
+            ws[f'A{row}'] = 'Время доставки:  ' + formatted_time
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Комментарий
+        if comment:
+            ws[f'A{row}'] = 'Комментарий:  ' + comment
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        row += 1
+        
+        # Заголовок таблицы
+        ws[f'A{row}'] = '№'
+        ws[f'B{row}'] = 'Название товара'
+        ws[f'C{row}'] = 'Количество'
+        
+        for col in ['A', 'B', 'C']:
+            cell = ws[f'{col}{row}']
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = thin_border
+        
+        row += 1
+        start_row = row
+        
+        # Продукты
+        products = data.get('products', [])
+        total_count = 0
+        
+        for i, product in enumerate(products, 1):
+            product_name = product.get('productName', 'Неизвестно')
+            product_count = product.get('productCount', 0)
+            
+            try:
+                count_value = float(product_count) if product_count else 0
+            except (ValueError, TypeError):
+                count_value = 0
+            
+            total_count += count_value
+            
+            ws[f'A{row}'] = i
+            ws[f'B{row}'] = product_name
+            ws[f'C{row}'] = count_value
+            
+            # Числовой формат
+            ws[f'C{row}'].number_format = '0.00'
+            
+            ws[f'A{row}'].font = normal_font
+            ws[f'A{row}'].alignment = Alignment(horizontal='center', vertical='center')
+            
+            ws[f'B{row}'].font = Font(name='Arial', size=13.5, bold=True)
+            ws[f'B{row}'].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            
+            ws[f'C{row}'].font = normal_font
+            ws[f'C{row}'].alignment = Alignment(horizontal='center', vertical='center')
+            
+            for col in ['A', 'B', 'C']:
+                ws[f'{col}{row}'].border = thin_border
+            
+            ws.row_dimensions[row].height = 25
+            row += 1
+        
+        # Строка ИТОГО
+        ws[f'A{row}'] = ''
+        ws[f'B{row}'] = 'ИТОГО:'
+        ws[f'C{row}'] = total_count
+        
+        ws[f'C{row}'].number_format = '0.00'
+        
+        ws[f'B{row}'].font = Font(name='Arial', size=12, bold=True)
+        ws[f'C{row}'].font = Font(name='Arial', size=12, bold=True)
+        ws[f'B{row}'].alignment = Alignment(horizontal='right', vertical='center')
+        ws[f'C{row}'].alignment = Alignment(horizontal='center', vertical='center')
+        
+        total_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+        for col in ['A', 'B', 'C']:
+            ws[f'{col}{row}'].fill = total_fill
+            ws[f'{col}{row}'].border = thin_border
+        
+        ws.row_dimensions[row].height = 29
+        
+        # Ширина столбцов
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 65
+        ws.column_dimensions['C'].width = 15
+        
+        # Настройки печати
+        ws.print_options.horizontalCentered = False
+        ws.print_options.verticalCentered = False
+        ws.print_title_rows = f'1:{start_row-1}'
+        
+        # Сохранение файла с username
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"restoran_{client_name}_{timestamp}.xlsx"
+        temp_dir = tempfile.gettempdir()
+        filepath = os.path.join(temp_dir, filename)
+        
+        wb.save(filepath)
+        print(f"✅ Ресторанный Excel создан: {filename}")
+        return filepath, filename
+        
+    except Exception as e:
+        print(f"❌ Ошибка при создании ресторанного Excel: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+    
+    """Restoran buyurtmasi uchun Excel yaratish"""
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Buyurtma"
+        
+        # Sahifa sozlamalari
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        
+        ws.page_margins = PageMargins(
+            left=0.2, right=0.2, top=0.2, bottom=0.2,
+            header=0.3, footer=0.3
+        )
+        
+        # Stillar
+        title_font = Font(name='Arial', size=16, bold=True)
+        header_font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
+        normal_font = Font(name='Arial', size=11)
+        info_font = Font(name='Arial', size=12, bold=True)
+        
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Mijoz ma'lumotlarini olish
+        client = data.get('client', {})
+        client_name = client.get('username', 'N/A')
+        client_phone = client.get('number', 'N/A')
+        client_location = client.get('location', 'N/A')
+        comment = data.get('comment', '')
+        sent_time = data.get('sentToOrders', '')
+        order_id = data.get('id', 'N/A')
+        
+        # Sarlavha - username bilan
+        ws['A1'] = f'RESTORAN: {client_name}'
+        ws['A1'].font = title_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        ws.merge_cells('A1:C1')
+        
+        row = 3
+        
+        # Vaqtni formatlash
+        if sent_time:
+            try:
+                from dateutil import parser
+                dt = parser.parse(sent_time)
+                formatted_time = dt.strftime('%d-%B soat %H:%M ga')
+                # Oyni o'zbekchaga o'girish
+                months_uz = {
+                    'January': 'yanvar', 'February': 'fevral', 'March': 'mart',
+                    'April': 'aprel', 'May': 'may', 'June': 'iyun',
+                    'July': 'iyul', 'August': 'avgust', 'September': 'sentabr',
+                    'October': 'oktabr', 'November': 'noyabr', 'December': 'dekabr'
+                }
+                for eng, uz in months_uz.items():
+                    formatted_time = formatted_time.replace(eng, uz)
+            except:
+                # Agar dateutil bo'lmasa, oddiy format
+                try:
+                    dt = datetime.fromisoformat(sent_time.replace('Z', '+00:00'))
+                    formatted_time = dt.strftime('%d-%m-%Y soat %H:%M ga')
+                except:
+                    formatted_time = sent_time
+        else:
+            formatted_time = 'N/A'
+        
+        # Buyurtmachi
+        if client_name:
+            ws[f'A{row}'] = 'Buyurtma ID:  ' + order_id
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Telefon
+        if client_phone:
+            ws[f'A{row}'] = 'Telefon:  ' + client_phone
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Manzil
+        if client_location:
+            ws[f'A{row}'] = 'Manzil:  ' + client_location
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Vaqt
+        if formatted_time:
+            ws[f'A{row}'] = 'Yuborish vaqti:  ' + formatted_time
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        # Izoh
+        if comment:
+            ws[f'A{row}'] = 'Izoh:  ' + comment
+            ws[f'A{row}'].font = title_font
+            ws.merge_cells(f'A{row}:C{row}')
+            row += 1
+        
+        row += 1
+        
+        # Jadval sarlavhasi
+        ws[f'A{row}'] = '№'
+        ws[f'B{row}'] = 'Mahsulot nomi'
+        ws[f'C{row}'] = 'Miqdori'
+        
+        for col in ['A', 'B', 'C']:
+            cell = ws[f'{col}{row}']
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = thin_border
+        
+        row += 1
+        start_row = row
+        
+        # Mahsulotlar
+        products = data.get('products', [])
+        total_count = 0
+        
+        for i, product in enumerate(products, 1):
+            product_name = product.get('productName', 'Noma\'lum')
+            product_count = product.get('productCount', 0)
+            
+            try:
+                count_value = float(product_count) if product_count else 0
+            except (ValueError, TypeError):
+                count_value = 0
+            
+            total_count += count_value
+            
+            ws[f'A{row}'] = i
+            ws[f'B{row}'] = product_name
+            ws[f'C{row}'] = count_value
+            
+            # Number format
+            ws[f'C{row}'].number_format = '0.00'
+            
+            ws[f'A{row}'].font = normal_font
+            ws[f'A{row}'].alignment = Alignment(horizontal='center', vertical='center')
+            
+            ws[f'B{row}'].font = Font(name='Arial', size=13.5, bold=True)
+            ws[f'B{row}'].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            
+            ws[f'C{row}'].font = normal_font
+            ws[f'C{row}'].alignment = Alignment(horizontal='center', vertical='center')
+            
+            for col in ['A', 'B', 'C']:
+                ws[f'{col}{row}'].border = thin_border
+            
+            ws.row_dimensions[row].height = 25
+            row += 1
+        
+        # ИТОГО qatori
+        ws[f'A{row}'] = ''
+        ws[f'B{row}'] = 'JAMI:'
+        ws[f'C{row}'] = total_count
+        
+        ws[f'C{row}'].number_format = '0.00'
+        
+        ws[f'B{row}'].font = Font(name='Arial', size=12, bold=True)
+        ws[f'C{row}'].font = Font(name='Arial', size=12, bold=True)
+        ws[f'B{row}'].alignment = Alignment(horizontal='right', vertical='center')
+        ws[f'C{row}'].alignment = Alignment(horizontal='center', vertical='center')
+        
+        total_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+        for col in ['A', 'B', 'C']:
+            ws[f'{col}{row}'].fill = total_fill
+            ws[f'{col}{row}'].border = thin_border
+        
+        ws.row_dimensions[row].height = 29
+        
+        # Ustun kengligi
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 65
+        ws.column_dimensions['C'].width = 15
+        
+        # Chop etish sozlamalari
+        ws.print_options.horizontalCentered = False
+        ws.print_options.verticalCentered = False
+        ws.print_title_rows = f'1:{start_row-1}'
+        
+        # Fayl saqlash - username bilan
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"restoran_{client_name}_{timestamp}.xlsx"
+        temp_dir = tempfile.gettempdir()
+        filepath = os.path.join(temp_dir, filename)
+        
+        wb.save(filepath)
+        print(f"✅ Restoran Excel yaratildi: {filename}")
+        return filepath, filename
+        
+    except Exception as e:
+        print(f"❌ Restoran Excel yaratishda xato: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+    
 def print_excel_file(filepath, printer_name):
     """Печать Excel файла на конкретный принтер"""
     try:
@@ -343,7 +761,7 @@ def api_info():
     """Информация об API"""
     return jsonify({
         "name": "Excel Print Server",
-        "version": "2.3",
+        "version": "2.4",
         "status": "Работает",
         "description": "Создает и печатает Excel файлы с поддержкой выбора принтера",
         "printers": PRINTERS,
@@ -354,6 +772,7 @@ def api_info():
             "Категории поддержка",
             "Единицы измерения (type)",
             "Выбор конкретного принтера",
+            "Restoran buyurtmalari",
             "Печать",
             "Скачивание",
             "Double числа поддержка"
@@ -361,27 +780,10 @@ def api_info():
         "endpoints": {
             "POST /print": "Создание и печать Excel",
             "POST /excel": "Только создание Excel (для скачивания)",
+            "POST /restoran": "Restoran buyurtmalari",
             "GET /printers": "Список доступных принтеров",
+            "GET /test": "Тестовый Excel",
             "GET /": "Информация об API"
-        },
-        "example": {
-            "url": "/print",
-            "method": "POST",
-            "body": {
-                "printer": 8001,
-                "username": "John Doe",
-                "order_id": "25-09-12-10",
-                "filial": "Ташкент",
-                "category": "Продукты питания",
-                "items": [
-                    {
-                        "product_id": 90,
-                        "name": "Кортошка оллади",
-                        "count": 4.5,
-                        "type": "шт"
-                    }
-                ]
-            }
         }
     })
 
@@ -505,6 +907,58 @@ def api_print():
             "traceback": traceback.format_exc()
         }), 500
 
+@app.route('/restoran', methods=['POST'])
+def api_restoran():
+    """Restoran buyurtmalarini chop etish"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON ma'lumot kerak"}), 400
+        
+        print("\n" + "="*60)
+        print("🍕 RESTORAN BUYURTMA KELDI")
+        print("="*60)
+        
+        order_id = data.get('id', 'N/A')
+        products = data.get('products', [])
+        
+        if not products:
+            return jsonify({"error": "Mahsulotlar ro'yxati bo'sh"}), 400
+        
+        print(f"📋 Buyurtma ID: {order_id}")
+        print(f"🍽️  Mahsulotlar soni: {len(products)}")
+        
+        # Excel yaratish
+        filepath, filename = create_restoran_excel(data)
+        if not filepath:
+            return jsonify({"error": "Excel yaratib bo'lmadi"}), 500
+        
+        # Asosiy printerda chop etish (8001 - MF270 Series)
+        main_printer = PRINTERS[2]
+        print(f"🖨️  Asosiy printerda chop etish: {main_printer}")
+        
+        print_success = print_excel_file(filepath, main_printer)
+        
+        print("="*60 + "\n")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Restoran buyurtmasi {main_printer} printerga yuborildi",
+            "order_id": order_id,
+            "filename": filename,"products_count": len(products),
+            "printer": main_printer,
+            "print_status": "yuborildi" if print_success else "xato"
+        })
+        
+    except Exception as e:
+        import traceback
+        print(f"❌ XATO: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
 @app.route('/excel', methods=['POST'])
 def api_excel_only():
     """Только создание Excel (для скачивания)"""
@@ -591,15 +1045,107 @@ def api_test():
         )
     else:
         return jsonify({"error": "Не удалось создать тестовый Excel"}), 500
+@app.route('/restoran-test', methods=['GET'])
+def api_restoran_test():
+    """Restoran uchun test buyurtma yaratish"""
+    test_data = {
+        "id": "25-10-24-TEST",
+        "products": [
+            {
+                "productId": 1,
+                "productName": "Mone Cake",
+                "productPrice": 15000,
+                "productCount": 123
+            },
+            {
+                "productId": 2,
+                "productName": "Chocolate Cake",
+                "productPrice": 18000,
+                "productCount": 45
+            },
+            {
+                "productId": 3,
+                "productName": "Vanilla Ice Cream",
+                "productPrice": 12000,
+                "productCount": 78
+            },
+            {
+                "productId": 4,
+                "productName": "Espresso Coffee",
+                "productPrice": 8000,
+                "productCount": 150
+            },
+            {
+                "productId": 5,
+                "productName": "Fruit Salad",
+                "productPrice": 20000,
+                "productCount": 32
+            }
+        ],
+        "orderPrice": 9225000,
+        "client": {
+            "id": 1,
+            "username": "Samandar",
+            "number": "+998979231770",
+            "location": "Samarqand shahar 40-maktab oldida"
+        },
+        "comment": "Tez yetkazib bering, iltimos!",
+        "sentToOrders": "2025-10-24T22:49:33+05:00",
+        "createdBy": {
+            "id": 123,
+            "phoneNumber": "+998901234567",
+            "role": "manager"
+        },
+        "createdAt": "2025-10-24T22:49:33+05:00"
+    }
+    
+    # Excel yaratish
+    filepath, filename = create_restoran_excel(test_data)
+    
+    if filepath:
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+    else:
+        return jsonify({"error": "Test restoran Excel yaratib bo'lmadi"}), 500
+    
+# ============================================
+# BARCHA REQUESTLARNI LOG QILISH
+# ============================================
+@app.before_request
+def log_request_info():
+    """Barcha requestlarni log qilish"""
+    print("\n" + "🔔"*30)
+    print(f"📨 Request: {request.method} {request.path}")
+    print(f"🌐 Remote Addr: {request.remote_addr}")
+    
+    if request.is_json:
+        print(f"📦 JSON Body:")
+        import json
+        print(json.dumps(request.get_json(), indent=2, ensure_ascii=False))
+    elif request.form:
+        print(f"📝 Form Data: {dict(request.form)}")
+    
+    print("🔔"*30 + "\n")
 
+# ============================================
+# SERVER ISHGA TUSHIRISH
+# ============================================
 if __name__ == '__main__':
-    print("=== EXCEL PRINT SERVER (FIXED PRINTER SELECTION) ===")
+    print("=== EXCEL PRINT SERVER (RESTORAN SUPPORT) ===")
     print("URL: http://localhost:2020")
     print("Тестовый Excel: http://localhost:2020/test")
     print("Список принтеров: http://localhost:2020/printers")
     print("Принтеры:", list(PRINTERS.keys()))
     print("Excel библиотека: openpyxl")
-    print("Новые функции: Правильный выбор принтера, Type/Unit support")
+    print("Новые функции:")
+    print("  - Правильный выбор принтера")
+    print("  - Type/Unit support")
+    print("  - Restoran buyurtmalari (/restoran)")
+    print("  - Request logging")
     print("Ctrl+C - Остановить")
     print("=====================================================")
     

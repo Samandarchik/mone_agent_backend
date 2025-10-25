@@ -957,7 +957,7 @@ func CreateOrder(c *gin.Context) {
 func SendToPrinter(order OrderResponse) {
 	printerURL := os.Getenv("PRINTER_URL")
 	if printerURL == "" {
-		printerURL = "https://marxabo1.javohir-jasmina.uz/print"
+		printerURL = "https://marxabo1.javohir-jasmina.uz/restoran"
 	}
 
 	jsonData, err := json.Marshal(order)
