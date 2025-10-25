@@ -1254,23 +1254,50 @@ func MarkSMSSent(c *gin.Context) {
 		return
 	}
 
-	var clientID int
-	err := DB.QueryRow("SELECT id FROM clients WHERE number = ?", phone).Scan(&clientID)
+	// 1. Shu raqamga tegishli barcha client_id larni olish
+	rows, err := DB.Query("SELECT id FROM clients WHERE number = ?", phone)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Mijozlarni olishda xatolik",
+		})
+		return
+	}
+	defer rows.Close()
+
+	var clientIDs []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err == nil {
+			clientIDs = append(clientIDs, id)
+		}
+	}
+
+	if len(clientIDs) == 0 {
 		c.JSON(http.StatusNotFound, APIResponse{
 			Success: false,
-			Error:   "Mijoz topilmadi",
+			Error:   "Bu raqamga tegishli mijoz topilmadi",
 		})
 		return
 	}
 
-	result, err := DB.Exec(`
+	// 2. IN (...) uchun placeholderlar yaratish
+	placeholders := make([]string, len(clientIDs))
+	args := make([]interface{}, len(clientIDs))
+	for i, id := range clientIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
 		UPDATE orders 
 		SET sms_sent = 1, sms_sent_at = CURRENT_TIMESTAMP 
-		WHERE client_id = ? AND sms_sent = 0`,
-		clientID,
+		WHERE client_id IN (%s) AND sms_sent = 0`,
+		strings.Join(placeholders, ","),
 	)
 
+	// 3. Yangilash
+	result, err := DB.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
@@ -1283,7 +1310,7 @@ func MarkSMSSent(c *gin.Context) {
 
 	c.JSON(http.StatusOK, APIResponse{
 		Success: true,
-		Message: fmt.Sprintf("SMS yuborilgani tasdiqlandi (%d ta buyurtma)", rowsAffected),
+		Message: fmt.Sprintf("SMS yuborilgani tasdiqlandi (%d ta buyurtma yangilandi)", rowsAffected),
 	})
 }
 
