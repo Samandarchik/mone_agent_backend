@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 
 type User struct {
 	ID          int       `json:"id"`
+	Username    string    `json:"username"`
 	PhoneNumber string    `json:"phoneNumber"`
 	Password    string    `json:"-"`
 	Role        string    `json:"role"`
@@ -37,6 +40,8 @@ type Client struct {
 	Location  string    `json:"location"`
 	Longitude float64   `json:"longitude"`
 	Latitude  float64   `json:"latitude"`
+	ImageUrl  string    `json:"imageUrl"`
+	UserID    int       `json:"userId"`
 	CreatedBy int       `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -59,6 +64,7 @@ type Order struct {
 	Status       string     `json:"status"`
 	SentToOrders time.Time  `json:"sentToOrders"`
 	CreatedBy    int        `json:"createdBy"`
+	SupplierID   *int       `json:"supplierId,omitempty"`
 	SmsSent      int        `json:"smsSent"`
 	SmsSentAt    *time.Time `json:"smsSentAt,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
@@ -86,6 +92,7 @@ type LoginResponse struct {
 }
 
 type CreateUserRequest struct {
+	Username    string `json:"username" binding:"required"`
 	PhoneNumber string `json:"phoneNumber" binding:"required"`
 	Password    string `json:"password" binding:"required"`
 	Role        string `json:"role" binding:"required"`
@@ -105,6 +112,7 @@ type ClientRequest struct {
 	Location  string  `json:"location"`
 	Longitude float64 `json:"longitude"`
 	Latitude  float64 `json:"latitude"`
+	ImageUrl  string  `json:"imageUrl"`
 }
 
 type OrderProductRequest struct {
@@ -117,7 +125,7 @@ type CreateOrderRequest struct {
 	NewClient    *ClientRequest        `json:"newClient"`
 	Products     []OrderProductRequest `json:"products" binding:"required"`
 	Comment      string                `json:"comment"`
-	SentToOrders string                `json:"sentToOrders" binding:"required"`
+	SentToOrders string                `json:"sentToOrders" binding:"required"` // MAJBURIY!
 }
 
 type UpdateStatusRequest struct {
@@ -133,6 +141,7 @@ type OrderResponse struct {
 	Status       string              `json:"status"`
 	SentToOrders string              `json:"sentToOrders"`
 	CreatedBy    UserResponse        `json:"createdBy"`
+	Supplier     *UserResponse       `json:"supplier,omitempty"`
 	CreatedAt    string              `json:"createdAt"`
 }
 
@@ -150,10 +159,12 @@ type ClientResponse struct {
 	Location  string  `json:"location"`
 	Longitude float64 `json:"longitude"`
 	Latitude  float64 `json:"latitude"`
+	ImageUrl  string  `json:"imageUrl"`
 }
 
 type UserResponse struct {
 	ID          int    `json:"id"`
+	Username    string `json:"username"`
 	PhoneNumber string `json:"phoneNumber"`
 	Role        string `json:"role"`
 }
@@ -189,6 +200,7 @@ func InitDB() error {
 	sqlStmt := `
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT NOT NULL,
 		phone_number TEXT UNIQUE NOT NULL,
 		password TEXT NOT NULL,
 		role TEXT NOT NULL,
@@ -202,8 +214,11 @@ func InitDB() error {
 		location TEXT,
 		longitude REAL,
 		latitude REAL,
+		image_url TEXT,
+		user_id INTEGER,
 		created_by INTEGER,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id),
 		FOREIGN KEY (created_by) REFERENCES users(id)
 	);
 
@@ -223,13 +238,15 @@ func InitDB() error {
 		client_id INTEGER NOT NULL,
 		comment TEXT,
 		status TEXT DEFAULT 'pending',
-		sent_to_orders DATETIME,
+		sent_to_orders DATETIME NOT NULL,
 		created_by INTEGER NOT NULL,
+		supplier_id INTEGER,
 		sms_sent INTEGER DEFAULT 0,
 		sms_sent_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (client_id) REFERENCES clients(id),
-		FOREIGN KEY (created_by) REFERENCES users(id)
+		FOREIGN KEY (created_by) REFERENCES users(id),
+		FOREIGN KEY (supplier_id) REFERENCES users(id)
 	);
 
 	CREATE TABLE IF NOT EXISTS order_items (
@@ -265,13 +282,171 @@ func CreateDefaultAdmin() error {
 	}
 
 	_, err = DB.Exec(
-		"INSERT INTO users (phone_number, password, role) VALUES (?, ?, ?)",
+		"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
+		"Admin",
 		"+998901234567",
 		string(hashedPassword),
 		"admin",
 	)
 
 	return err
+}
+
+// ========================= TELEGRAM =========================
+
+const (
+	TelegramBotToken = "6716187239:AAHoxfoLCRnu_o-jSqE3j_7QesnDBtZjoZE"
+	TelegramChatID   = "-1003173379469"
+)
+
+type TelegramMessage struct {
+	ChatID    string `json:"chat_id"`
+	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode"`
+}
+
+func SendTelegramNotification(orderID string, client Client, products []OrderItemResponse, orderPrice float64, sentToOrders time.Time, comment string) error {
+	// Mahsulotlar ro'yxatini yaratish
+	var productsList string
+	for _, p := range products {
+		itemTotal := p.ProductPrice * float64(p.ProductCount)
+		productsList += fmt.Sprintf("• %s - %d x %.0f so'm = %.0f so'm\n",
+			p.ProductName, p.ProductCount, p.ProductPrice, itemTotal)
+	}
+
+	// Yetkazish vaqti
+	deliveryTime := sentToOrders.Format("2-January soat 15:04")
+
+	// Telegram xabari
+	message := fmt.Sprintf(
+		"🆕 *YANGI BUYURTMA!*\n\n"+
+			"📋 Buyurtma ID: `%s`\n"+
+			"👤 Mijoz: %s\n"+
+			"📞 Telefon: %s\n"+
+			"📍 Manzil: %s\n\n"+
+			"🛒 *Mahsulotlar:*\n%s\n"+
+			"💰 *Jami summa:* %.0f so'm\n"+
+			"🕐 *Yetkazish vaqti:* %s\n"+
+			"💬 *Izoh:* %s",
+		orderID,
+		client.Username,
+		client.Number,
+		client.Location,
+		productsList,
+		orderPrice,
+		deliveryTime,
+		comment,
+	)
+
+	if comment == "" {
+		message = fmt.Sprintf(
+			"🆕 *YANGI BUYURTMA!*\n\n"+
+				"📋 Buyurtma ID: `%s`\n"+
+				"👤 Mijoz: %s\n"+
+				"📞 Telefon: %s\n"+
+				"📍 Manzil: %s\n\n"+
+				"🛒 *Mahsulotlar:*\n%s\n"+
+				"💰 *Jami summa:* %.0f so'm\n"+
+				"🕐 *Yetkazish vaqti:* %s",
+			orderID,
+			client.Username,
+			client.Number,
+			client.Location,
+			productsList,
+			orderPrice,
+			deliveryTime,
+		)
+	}
+
+	telegramMsg := TelegramMessage{
+		ChatID:    TelegramChatID,
+		Text:      message,
+		ParseMode: "Markdown",
+	}
+
+	jsonData, err := json.Marshal(telegramMsg)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", TelegramBotToken)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram API error: %s", string(body))
+	}
+
+	return nil
+}
+
+// ========================= FILE UPLOAD =========================
+
+func UploadImage(c *gin.Context) {
+	file, err := c.FormFile("image")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Rasm yuklanmadi",
+		})
+		return
+	}
+
+	// Faqat rasm formatlarini qabul qilish
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowedExts := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".gif":  true,
+		".webp": true,
+	}
+
+	if !allowedExts[ext] {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Faqat rasm fayllari qabul qilinadi (jpg, jpeg, png, gif, webp)",
+		})
+		return
+	}
+
+	// Rasmlar uchun papka yaratish
+	uploadDir := "./uploads"
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Papka yaratishda xatolik",
+		})
+		return
+	}
+
+	// Unique filename yaratish
+	filename := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+	filepath := filepath.Join(uploadDir, filename)
+
+	// Faylni saqlash
+	if err := c.SaveUploadedFile(file, filepath); err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Faylni saqlashda xatolik",
+		})
+		return
+	}
+
+	// URL qaytarish (faqat path, base URL yo'q)
+	imageURL := "/uploads/" + filename
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Rasm muvaffaqiyatli yuklandi",
+		Data: map[string]interface{}{
+			"url": imageURL,
+		},
+	})
 }
 
 // ========================= AUTH =========================
@@ -328,24 +503,33 @@ func AuthMiddleware() gin.HandlerFunc {
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, APIResponse{
 				Success: false,
-				Error:   "Token kiritilmagan",
+				Error:   "Authorization header yo'q",
 			})
 			c.Abort()
 			return
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		claims, err := ValidateToken(tokenString)
+		bearerToken := strings.Split(authHeader, " ")
+		if len(bearerToken) != 2 {
+			c.JSON(http.StatusUnauthorized, APIResponse{
+				Success: false,
+				Error:   "Token formati noto'g'ri",
+			})
+			c.Abort()
+			return
+		}
+
+		claims, err := ValidateToken(bearerToken[1])
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, APIResponse{
 				Success: false,
-				Error:   "Token noto'g'ri yoki muddati o'tgan",
+				Error:   "Yaroqsiz token",
 			})
 			c.Abort()
 			return
 		}
 
-		c.Set("userID", claims.UserID)
+		c.Set("userId", claims.UserID)
 		c.Set("role", claims.Role)
 		c.Next()
 	}
@@ -357,7 +541,7 @@ func AdminOnly() gin.HandlerFunc {
 		if !exists || role != "admin" {
 			c.JSON(http.StatusForbidden, APIResponse{
 				Success: false,
-				Error:   "Bu amalni faqat admin bajara oladi",
+				Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
 			})
 			c.Abort()
 			return
@@ -366,36 +550,61 @@ func AdminOnly() gin.HandlerFunc {
 	}
 }
 
+// ========================= HANDLERS =========================
+
 func Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse{
+		c.JSON(http.StatusBadRequest, LoginResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
 	var user User
+	// Telefon raqam yoki username bilan login qilish
 	err := DB.QueryRow(
-		"SELECT id, phone_number, password, role, created_at FROM users WHERE phone_number = ?",
-		req.PhoneNumber,
-	).Scan(&user.ID, &user.PhoneNumber, &user.Password, &user.Role, &user.CreatedAt)
+		"SELECT id, username, phone_number, password, role FROM users WHERE phone_number = ? OR username = ?",
+		req.PhoneNumber, req.PhoneNumber,
+	).Scan(&user.ID, &user.Username, &user.PhoneNumber, &user.Password, &user.Role)
 
-	if err != nil {
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusUnauthorized, LoginResponse{
 			Success: false,
-			Error:   "Telefon raqam yoki parol noto'g'ri",
+			Error:   "Login yoki parol noto'g'ri",
 		})
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, LoginResponse{
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, LoginResponse{
 			Success: false,
-			Error:   "Telefon raqam yoki parol noto'g'ri",
+			Error:   "Serverda xatolik",
 		})
 		return
+	}
+
+	// Parolni tekshirish - client uchun telefon raqam parol bo'ladi
+	// Agar user rolida "client" bo'lsa, telefon raqamni tekshirish
+	if user.Role == "client" {
+		// Client uchun parol = telefon raqam (hashed)
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+			c.JSON(http.StatusUnauthorized, LoginResponse{
+				Success: false,
+				Error:   "Login yoki parol noto'g'ri",
+			})
+			return
+		}
+	} else {
+		// Boshqa rollar uchun oddiy parol tekshirish
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+			c.JSON(http.StatusUnauthorized, LoginResponse{
+				Success: false,
+				Error:   "Login yoki parol noto'g'ri",
+			})
+			return
+		}
 	}
 
 	token, err := GenerateToken(user.ID, user.Role)
@@ -407,11 +616,15 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	user.Password = ""
 	c.JSON(http.StatusOK, LoginResponse{
 		Success: true,
 		Token:   token,
-		User:    &user,
+		User: &User{
+			ID:          user.ID,
+			Username:    user.Username,
+			PhoneNumber: user.PhoneNumber,
+			Role:        user.Role,
+		},
 	})
 }
 
@@ -420,33 +633,25 @@ func CreateUser(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	if req.Role != "admin" && req.Role != "agent" {
+	// Rolni tekshirish
+	validRoles := []string{"admin", "operator", "user", "supplier"}
+	isValidRole := false
+	for _, role := range validRoles {
+		if req.Role == role {
+			isValidRole = true
+			break
+		}
+	}
+
+	if !isValidRole {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Role faqat 'admin' yoki 'agent' bo'lishi mumkin",
-		})
-		return
-	}
-
-	var count int
-	err := DB.QueryRow("SELECT COUNT(*) FROM users WHERE phone_number = ?", req.PhoneNumber).Scan(&count)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   "Ma'lumotlar bazasi xatoligi",
-		})
-		return
-	}
-
-	if count > 0 {
-		c.JSON(http.StatusConflict, APIResponse{
-			Success: false,
-			Error:   "Bu telefon raqam allaqachon mavjud",
+			Error:   "Rol faqat 'admin', 'operator', 'user' yoki 'supplier' bo'lishi mumkin",
 		})
 		return
 	}
@@ -461,13 +666,21 @@ func CreateUser(c *gin.Context) {
 	}
 
 	result, err := DB.Exec(
-		"INSERT INTO users (phone_number, password, role) VALUES (?, ?, ?)",
+		"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
+		req.Username,
 		req.PhoneNumber,
 		string(hashedPassword),
 		req.Role,
 	)
 
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			c.JSON(http.StatusConflict, APIResponse{
+				Success: false,
+				Error:   "Bu telefon raqam allaqachon ro'yxatdan o'tgan",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
 			Error:   "Foydalanuvchi yaratishda xatolik",
@@ -479,11 +692,84 @@ func CreateUser(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, APIResponse{
 		Success: true,
-		Message: req.Role + " muvaffaqiyatli yaratildi",
+		Message: "Foydalanuvchi muvaffaqiyatli yaratildi",
 		Data: map[string]interface{}{
 			"id":          userID,
+			"username":    req.Username,
 			"phoneNumber": req.PhoneNumber,
 			"role":        req.Role,
+		},
+	})
+}
+
+func Register(c *gin.Context) {
+	var req CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Ma'lumotlar to'liq emas",
+		})
+		return
+	}
+
+	// Register orqali faqat user yaratiladi
+	req.Role = "user"
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Parolni shifrlashda xatolik",
+		})
+		return
+	}
+
+	result, err := DB.Exec(
+		"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
+		req.Username,
+		req.PhoneNumber,
+		string(hashedPassword),
+		"user",
+	)
+
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			c.JSON(http.StatusConflict, APIResponse{
+				Success: false,
+				Error:   "Bu telefon raqam allaqachon ro'yxatdan o'tgan",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Ro'yxatdan o'tishda xatolik",
+		})
+		return
+	}
+
+	userID, _ := result.LastInsertId()
+
+	// Avtomatik login qilish
+	token, err := GenerateToken(int(userID), "user")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Token yaratishda xatolik",
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, APIResponse{
+		Success: true,
+		Message: "Ro'yxatdan muvaffaqiyatli o'tdingiz",
+		Data: map[string]interface{}{
+			"token": token,
+			"user": map[string]interface{}{
+				"id":          userID,
+				"username":    req.Username,
+				"phoneNumber": req.PhoneNumber,
+				"role":        "user",
+			},
 		},
 	})
 }
@@ -491,15 +777,11 @@ func CreateUser(c *gin.Context) {
 // ========================= PRODUCTS =========================
 
 func GetProducts(c *gin.Context) {
-	rows, err := DB.Query(`
-		SELECT id, name, price, category_name, image_url, ingredients, created_at 
-		FROM products 
-		ORDER BY created_at DESC
-	`)
+	rows, err := DB.Query("SELECT id, name, price, category_name, image_url, ingredients, created_at FROM products")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Ma'lumotlarni olishda xatolik",
+			Error:   "Mahsulotlarni olishda xatolik",
 		})
 		return
 	}
@@ -526,21 +808,20 @@ func CreateProduct(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	result, err := DB.Exec(`
-		INSERT INTO products (name, price, category_name, image_url, ingredients) 
-		VALUES (?, ?, ?, ?, ?)`,
+	result, err := DB.Exec(
+		"INSERT INTO products (name, price, category_name, image_url, ingredients) VALUES (?, ?, ?, ?, ?)",
 		req.Name, req.Price, req.CategoryName, req.ImageUrl, req.Ingredients,
 	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Mahsulot qo'shishda xatolik",
+			Error:   "Mahsulot yaratishda xatolik",
 		})
 		return
 	}
@@ -549,14 +830,9 @@ func CreateProduct(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, APIResponse{
 		Success: true,
-		Message: "Mahsulot muvaffaqiyatli qo'shildi",
+		Message: "Mahsulot muvaffaqiyatli yaratildi",
 		Data: map[string]interface{}{
-			"id":           productID,
-			"name":         req.Name,
-			"price":        req.Price,
-			"categoryName": req.CategoryName,
-			"imageUrl":     req.ImageUrl,
-			"ingredients":  req.Ingredients,
+			"id": productID,
 		},
 	})
 }
@@ -568,15 +844,13 @@ func UpdateProduct(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	result, err := DB.Exec(`
-		UPDATE products 
-		SET name = ?, price = ?, category_name = ?, image_url = ?, ingredients = ? 
-		WHERE id = ?`,
+	result, err := DB.Exec(
+		"UPDATE products SET name = ?, price = ?, category_name = ?, image_url = ?, ingredients = ? WHERE id = ?",
 		req.Name, req.Price, req.CategoryName, req.ImageUrl, req.Ingredients, productID,
 	)
 
@@ -599,7 +873,7 @@ func UpdateProduct(c *gin.Context) {
 
 	c.JSON(http.StatusOK, APIResponse{
 		Success: true,
-		Message: "Mahsulot yangilandi",
+		Message: "Mahsulot muvaffaqiyatli yangilandi",
 	})
 }
 
@@ -626,22 +900,23 @@ func DeleteProduct(c *gin.Context) {
 
 	c.JSON(http.StatusOK, APIResponse{
 		Success: true,
-		Message: "Mahsulot o'chirildi",
+		Message: "Mahsulot muvaffaqiyatli o'chirildi",
 	})
 }
 
 // ========================= CLIENTS =========================
 
 func GetClients(c *gin.Context) {
-	rows, err := DB.Query(`
-		SELECT id, username, number, location, longitude, latitude, created_by, created_at 
-		FROM clients 
-		ORDER BY created_at DESC
-	`)
+	userID, _ := c.Get("userId")
+
+	rows, err := DB.Query(
+		"SELECT id, username, number, location, longitude, latitude, image_url, user_id, created_at FROM clients WHERE created_by = ?",
+		userID,
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Ma'lumotlarni olishda xatolik",
+			Error:   "Mijozlarni olishda xatolik",
 		})
 		return
 	}
@@ -650,9 +925,13 @@ func GetClients(c *gin.Context) {
 	var clients []Client
 	for rows.Next() {
 		var cl Client
-		err := rows.Scan(&cl.ID, &cl.Username, &cl.Number, &cl.Location, &cl.Longitude, &cl.Latitude, &cl.CreatedBy, &cl.CreatedAt)
+		var userIDNull sql.NullInt64
+		err := rows.Scan(&cl.ID, &cl.Username, &cl.Number, &cl.Location, &cl.Longitude, &cl.Latitude, &cl.ImageUrl, &userIDNull, &cl.CreatedAt)
 		if err != nil {
 			continue
+		}
+		if userIDNull.Valid {
+			cl.UserID = int(userIDNull.Int64)
 		}
 		clients = append(clients, cl)
 	}
@@ -668,23 +947,61 @@ func CreateClient(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	userID, _ := c.Get("userID")
+	userID, _ := c.Get("userId")
 
-	result, err := DB.Exec(`
-		INSERT INTO clients (username, number, location, longitude, latitude, created_by) 
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		req.Username, req.Number, req.Location, req.Longitude, req.Latitude, userID,
+	// 1. Avval user yaratish (client roli bilan)
+	// Parol = telefon raqami (hashed)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Number), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Parolni shifrlashda xatolik",
+		})
+		return
+	}
+
+	// User yaratish
+	userResult, err := DB.Exec(
+		"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
+		req.Username,
+		req.Number,
+		string(hashedPassword),
+		"client",
+	)
+
+	if err != nil {
+		// Agar telefon raqam allaqachon mavjud bo'lsa
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			c.JSON(http.StatusConflict, APIResponse{
+				Success: false,
+				Error:   "Bu telefon raqam allaqachon ro'yxatdan o'tgan",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "User yaratishda xatolik",
+		})
+		return
+	}
+
+	newUserID, _ := userResult.LastInsertId()
+
+	// 2. Client yaratish
+	result, err := DB.Exec(
+		"INSERT INTO clients (username, number, location, longitude, latitude, image_url, user_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		req.Username, req.Number, req.Location, req.Longitude, req.Latitude, req.ImageUrl, newUserID, userID,
 	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Client qo'shishda xatolik",
+			Error:   "Mijoz yaratishda xatolik",
 		})
 		return
 	}
@@ -693,14 +1010,10 @@ func CreateClient(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, APIResponse{
 		Success: true,
-		Message: "Client muvaffaqiyatli qo'shildi",
+		Message: "Mijoz muvaffaqiyatli yaratildi (Login: username, Parol: telefon raqam)",
 		Data: map[string]interface{}{
-			"id":        clientID,
-			"username":  req.Username,
-			"number":    req.Number,
-			"location":  req.Location,
-			"longitude": req.Longitude,
-			"latitude":  req.Latitude,
+			"id":     clientID,
+			"userId": newUserID,
 		},
 	})
 }
@@ -712,133 +1025,16 @@ func UpdateClient(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	result, err := DB.Exec(`
-		UPDATE clients 
-		SET username = ?, number = ?, location = ?, longitude = ?, latitude = ? 
-		WHERE id = ?`,
-		req.Username, req.Number, req.Location, req.Longitude, req.Latitude, clientID,
-	)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   "Client yangilashda xatolik",
-		})
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Client topilmadi",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, APIResponse{
-		Success: true,
-		Message: "Client yangilandi",
-	})
-}
-
-func DeleteClient(c *gin.Context) {
-	clientID := c.Param("id")
-
-	result, err := DB.Exec("DELETE FROM clients WHERE id = ?", clientID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   "Client o'chirishda xatolik",
-		})
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Client topilmadi",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, APIResponse{
-		Success: true,
-		Message: "Client o'chirildi",
-	})
-}
-
-// ========================= ORDERS =========================
-
-func GenerateOrderID() (string, error) {
-	now := time.Now()
-	dateStr := now.Format("06-01-02")
-
-	var count int
-	err := DB.QueryRow(
-		"SELECT COUNT(*) FROM orders WHERE id LIKE ?",
-		dateStr+"-%",
-	).Scan(&count)
-
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%s-%d", dateStr, count+1), nil
-}
-
-func CreateOrder(c *gin.Context) {
-	var req CreateOrderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
-		})
-		return
-	}
-
-	userID, _ := c.Get("userID")
-	var clientID int
-
-	if req.NewClient != nil {
-		result, err := DB.Exec(`
-			INSERT INTO clients (username, number, location, longitude, latitude, created_by) 
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			req.NewClient.Username, req.NewClient.Number, req.NewClient.Location,
-			req.NewClient.Longitude, req.NewClient.Latitude, userID,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, APIResponse{
-				Success: false,
-				Error:   "Mijoz yaratishda xatolik",
-			})
-			return
-		}
-		id, _ := result.LastInsertId()
-		clientID = int(id)
-	} else if req.ClientID != nil {
-		clientID = *req.ClientID
-	} else {
-		c.JSON(http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "ClientId yoki newClient kiritilishi kerak",
-		})
-		return
-	}
-
-	var client Client
-	err := DB.QueryRow(`
-		SELECT id, username, number, location, longitude, latitude 
-		FROM clients WHERE id = ?`, clientID,
-	).Scan(&client.ID, &client.Username, &client.Number, &client.Location, &client.Longitude, &client.Latitude)
-
-	if err != nil {
+	// Client ma'lumotlarini olish
+	var existingClient Client
+	var userIDNull sql.NullInt64
+	err := DB.QueryRow("SELECT user_id FROM clients WHERE id = ?", clientID).Scan(&userIDNull)
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, APIResponse{
 			Success: false,
 			Error:   "Mijoz topilmadi",
@@ -846,17 +1042,235 @@ func CreateOrder(c *gin.Context) {
 		return
 	}
 
-	var orderItems []OrderItemResponse
+	// Client update qilish
+	result, err := DB.Exec(
+		"UPDATE clients SET username = ?, number = ?, location = ?, longitude = ?, latitude = ?, image_url = ? WHERE id = ?",
+		req.Username, req.Number, req.Location, req.Longitude, req.Latitude, req.ImageUrl, clientID,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Mijozni yangilashda xatolik",
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Mijoz topilmadi",
+		})
+		return
+	}
+
+	// Agar user_id mavjud bo'lsa, user ham yangilansin
+	if userIDNull.Valid {
+		existingClient.UserID = int(userIDNull.Int64)
+
+		// Parolni yangi telefon raqamdan hash qilish
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Number), bcrypt.DefaultCost)
+		if err == nil {
+			// User yangilash
+			DB.Exec(
+				"UPDATE users SET username = ?, phone_number = ?, password = ? WHERE id = ?",
+				req.Username, req.Number, string(hashedPassword), existingClient.UserID,
+			)
+		}
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Mijoz muvaffaqiyatli yangilandi",
+	})
+}
+
+func DeleteClient(c *gin.Context) {
+	clientID := c.Param("id")
+
+	// Avval client'ning user_id sini olish
+	var userIDNull sql.NullInt64
+	err := DB.QueryRow("SELECT user_id FROM clients WHERE id = ?", clientID).Scan(&userIDNull)
+
+	// Client o'chirish
+	result, err := DB.Exec("DELETE FROM clients WHERE id = ?", clientID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Mijozni o'chirishda xatolik",
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Mijoz topilmadi",
+		})
+		return
+	}
+
+	// Agar user mavjud bo'lsa, uni ham o'chirish
+	if userIDNull.Valid {
+		DB.Exec("DELETE FROM users WHERE id = ?", int(userIDNull.Int64))
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Mijoz muvaffaqiyatli o'chirildi",
+	})
+}
+
+// ========================= ORDERS =========================
+
+// YANGILANGAN: Yetkazib berish sanasiga ko'ra ID generatsiya qilish
+func GenerateOrderID(deliveryDate time.Time) (string, error) {
+	// Yetkazib berish kunidan yil, oy, kun olish
+	year := deliveryDate.Format("06")  // 25
+	month := deliveryDate.Format("01") // 01-12
+	day := deliveryDate.Format("02")   // 01-31
+
+	// Shu kunga qancha buyurtma bor ekanini tekshirish
+	// Format: 25-11-01-%
+	prefix := fmt.Sprintf("%s-%s-%s-", year, month, day)
+
+	var count int
+	err := DB.QueryRow(
+		"SELECT COUNT(*) FROM orders WHERE id LIKE ?",
+		prefix+"%",
+	).Scan(&count)
+
+	if err != nil {
+		return "", err
+	}
+
+	// Keyingi counter raqami
+	counter := count + 1
+	orderID := fmt.Sprintf("%s-%s-%s-%02d", year, month, day, counter)
+
+	return orderID, nil
+}
+
+func CreateOrder(c *gin.Context) {
+	var req CreateOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Ma'lumotlar to'liq emas",
+		})
+		return
+	}
+
+	// YANGI: Yetkazib berish vaqti majburiy tekshirish
+	if req.SentToOrders == "" {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Yetkazib berish vaqti kiritilishi shart",
+		})
+		return
+	}
+
+	// Yetkazib berish vaqtini parse qilish
+	deliveryTime, err := time.Parse(time.RFC3339, req.SentToOrders)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Yetkazib berish vaqti formati noto'g'ri (ISO 8601 formatda bo'lishi kerak)",
+		})
+		return
+	}
+
+	userID, _ := c.Get("userId")
+
+	// Mijoz ID ni aniqlash yoki yangi mijoz yaratish
+	var clientID int
+	if req.ClientID != nil {
+		clientID = *req.ClientID
+	} else if req.NewClient != nil {
+		// 1. User yaratish
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewClient.Number), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Parolni shifrlashda xatolik",
+			})
+			return
+		}
+
+		userResult, err := DB.Exec(
+			"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
+			req.NewClient.Username,
+			req.NewClient.Number,
+			string(hashedPassword),
+			"client",
+		)
+
+		var newUserID int64
+		if err != nil {
+			// Agar user allaqachon mavjud bo'lsa, uning ID sini olish
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				var existingUserID int
+				err = DB.QueryRow("SELECT id FROM users WHERE phone_number = ?", req.NewClient.Number).Scan(&existingUserID)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, APIResponse{
+						Success: false,
+						Error:   "User tekshirishda xatolik",
+					})
+					return
+				}
+				newUserID = int64(existingUserID)
+			} else {
+				c.JSON(http.StatusInternalServerError, APIResponse{
+					Success: false,
+					Error:   "User yaratishda xatolik",
+				})
+				return
+			}
+		} else {
+			newUserID, _ = userResult.LastInsertId()
+		}
+
+		// 2. Client yaratish
+		result, err := DB.Exec(
+			"INSERT INTO clients (username, number, location, longitude, latitude, image_url, user_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			req.NewClient.Username,
+			req.NewClient.Number,
+			req.NewClient.Location,
+			req.NewClient.Longitude,
+			req.NewClient.Latitude,
+			req.NewClient.ImageUrl,
+			newUserID,
+			userID,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Yangi mijoz yaratishda xatolik",
+			})
+			return
+		}
+		newClientID, _ := result.LastInsertId()
+		clientID = int(newClientID)
+	} else {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Mijoz ID yoki yangi mijoz ma'lumotlari kiritilishi shart",
+		})
+		return
+	}
+
+	// Mahsulotlar narxini hisoblash
 	var totalPrice float64
+	var orderItems []OrderItem
 
 	for _, p := range req.Products {
 		var product Product
-		err := DB.QueryRow(
-			"SELECT id, name, price FROM products WHERE id = ?",
-			p.ProductID,
-		).Scan(&product.ID, &product.Name, &product.Price)
+		err := DB.QueryRow("SELECT id, name, price FROM products WHERE id = ?", p.ProductID).
+			Scan(&product.ID, &product.Name, &product.Price)
 
-		if err != nil {
+		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, APIResponse{
 				Success: false,
 				Error:   fmt.Sprintf("Mahsulot ID %d topilmadi", p.ProductID),
@@ -864,10 +1278,18 @@ func CreateOrder(c *gin.Context) {
 			return
 		}
 
-		itemTotal := product.Price * float64(p.ProductCount)
-		totalPrice += itemTotal
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Mahsulot ma'lumotlarini olishda xatolik",
+			})
+			return
+		}
 
-		orderItems = append(orderItems, OrderItemResponse{
+		itemPrice := product.Price * float64(p.ProductCount)
+		totalPrice += itemPrice
+
+		orderItems = append(orderItems, OrderItem{
 			ProductID:    product.ID,
 			ProductName:  product.Name,
 			ProductPrice: product.Price,
@@ -875,7 +1297,8 @@ func CreateOrder(c *gin.Context) {
 		})
 	}
 
-	orderID, err := GenerateOrderID()
+	// YANGILANGAN: Yetkazib berish sanasiga ko'ra Order ID generatsiya qilish
+	orderID, err := GenerateOrderID(deliveryTime)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
@@ -884,123 +1307,144 @@ func CreateOrder(c *gin.Context) {
 		return
 	}
 
-	sentToOrders, err := time.Parse(time.RFC3339, req.SentToOrders)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Noto'g'ri vaqt formati (ISO 8601 kerak)",
-		})
-		return
-	}
-
-	_, err = DB.Exec(`
-		INSERT INTO orders (id, order_price, client_id, comment, status, sent_to_orders, created_by) 
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		orderID, totalPrice, clientID, req.Comment, "pending", sentToOrders, userID,
+	// Buyurtmani saqlash
+	_, err = DB.Exec(
+		"INSERT INTO orders (id, order_price, client_id, comment, status, sent_to_orders, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		orderID,
+		totalPrice,
+		clientID,
+		req.Comment,
+		"pending",
+		deliveryTime,
+		userID,
 	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Buyurtma yaratishda xatolik",
+			Error:   "Buyurtmani saqlashda xatolik",
 		})
 		return
 	}
 
+	// Buyurtma itemlarini saqlash
 	for _, item := range orderItems {
-		_, err = DB.Exec(`
-			INSERT INTO order_items (order_id, product_id, product_name, product_price, product_count) 
-			VALUES (?, ?, ?, ?, ?)`,
-			orderID, item.ProductID, item.ProductName, item.ProductPrice, item.ProductCount,
+		_, err := DB.Exec(
+			"INSERT INTO order_items (order_id, product_id, product_name, product_price, product_count) VALUES (?, ?, ?, ?, ?)",
+			orderID,
+			item.ProductID,
+			item.ProductName,
+			item.ProductPrice,
+			item.ProductCount,
 		)
 		if err != nil {
-			continue
+			log.Printf("Order item saqlashda xatolik: %v", err)
 		}
 	}
 
-	var user User
-	DB.QueryRow("SELECT id, phone_number, role FROM users WHERE id = ?", userID).
-		Scan(&user.ID, &user.PhoneNumber, &user.Role)
+	// Mijoz ma'lumotlarini olish
+	var client Client
+	err = DB.QueryRow(`
+		SELECT id, username, number, location, longitude, latitude, image_url 
+		FROM clients WHERE id = ?`, clientID,
+	).Scan(&client.ID, &client.Username, &client.Number, &client.Location, &client.Longitude, &client.Latitude, &client.ImageUrl)
 
-	orderResponse := OrderResponse{
-		ID:         orderID,
-		Products:   orderItems,
-		OrderPrice: totalPrice,
-		Client: ClientResponse{
-			ID:        client.ID,
-			Username:  client.Username,
-			Number:    client.Number,
-			Location:  client.Location,
-			Longitude: client.Longitude,
-			Latitude:  client.Latitude,
-		},
-		Comment:      req.Comment,
-		Status:       "pending",
-		SentToOrders: sentToOrders.Format(time.RFC3339),
-		CreatedBy: UserResponse{
-			ID:          user.ID,
-			PhoneNumber: user.PhoneNumber,
-			Role:        user.Role,
-		},
-		CreatedAt: time.Now().Format(time.RFC3339),
+	if err != nil {
+		log.Printf("Mijoz ma'lumotlarini olishda xatolik: %v", err)
 	}
 
-	go SendToPrinter(orderResponse)
+	// Telegram guruhga xabar yuborish
+	go func() {
+		productsResp := make([]OrderItemResponse, 0, len(orderItems))
+		for _, it := range orderItems {
+			productsResp = append(productsResp, OrderItemResponse{
+				ProductID:    it.ProductID,
+				ProductName:  it.ProductName,
+				ProductPrice: it.ProductPrice,
+				ProductCount: it.ProductCount,
+			})
+		}
 
+		err := SendTelegramNotification(orderID, client, productsResp, totalPrice, deliveryTime, req.Comment)
+		if err != nil {
+			log.Printf("Telegram xabar yuborishda xatolik: %v", err)
+		}
+	}()
 	c.JSON(http.StatusCreated, APIResponse{
 		Success: true,
-		Message: "Buyurtma muvaffaqiyatli yaratildi va printerga yuborildi",
-		Data:    orderResponse,
+		Message: "Buyurtma muvaffaqiyatli yaratildi",
+		Data: map[string]interface{}{
+			"orderId": orderID,
+		},
 	})
 }
 
-func SendToPrinter(order OrderResponse) {
-	printerURL := os.Getenv("PRINTER_URL")
-	if printerURL == "" {
-		printerURL = "https://marxabo1.javohir-jasmina.uz/restoran"
-	}
-
-	jsonData, err := json.Marshal(order)
-	if err != nil {
-		return
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("POST", printerURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	client.Do(req)
-}
-
 func GetOrders(c *gin.Context) {
-	userID, _ := c.Get("userID")
+	userID, _ := c.Get("userId")
 	role, _ := c.Get("role")
 
-	var rows *sql.Rows
-	var err error
+	dateFilter := c.Query("date")
+	statusFilter := c.Query("status")
 
-	if role == "admin" {
-		rows, err = DB.Query(`
-			SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, created_at 
-			FROM orders 
-			ORDER BY created_at DESC
-		`)
-	} else {
-		rows, err = DB.Query(`
-			SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, created_at 
-			FROM orders 
-			WHERE created_by = ?
-			ORDER BY created_at DESC`, userID,
-		)
+	query := `
+		SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, supplier_id, sms_sent, sms_sent_at, created_at 
+		FROM orders WHERE 1=1`
+
+	var args []interface{}
+
+	// Role bo'yicha filtr
+	switch role {
+	case "admin":
+		// Admin barcha buyurtmalarni ko'radi
+		// Hech qanday qo'shimcha filtr yo'q
+
+	case "client":
+		// Client faqat o'z buyurtmalarini ko'radi
+		var clientID int
+		err := DB.QueryRow("SELECT id FROM clients WHERE user_id = ?", userID).Scan(&clientID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, APIResponse{
+				Success: false,
+				Error:   "Client ma'lumotlari topilmadi",
+			})
+			return
+		}
+		query += " AND client_id = ?"
+		args = append(args, clientID)
+
+	case "operator":
+		// Operator faqat o'zi yaratgan buyurtmalarni ko'radi
+		query += " AND created_by = ?"
+		args = append(args, userID)
+
+	case "supplier":
+		// Supplier faqat tayyor buyurtmalarni yoki o'ziga biriktirilgan buyurtmalarni ko'radi
+		query += " AND (status = 'ready' OR supplier_id = ?)"
+		args = append(args, userID)
+
+	default:
+		// Boshqa rollar faqat o'zlari yaratgan buyurtmalarni ko'radi
+		query += " AND created_by = ?"
+		args = append(args, userID)
 	}
 
+	if dateFilter != "" {
+		query += " AND DATE(sent_to_orders) = ?"
+		args = append(args, dateFilter)
+	}
+
+	if statusFilter != "" {
+		query += " AND status = ?"
+		args = append(args, statusFilter)
+	}
+
+	query += " ORDER BY sent_to_orders DESC, created_at DESC"
+
+	rows, err := DB.Query(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Ma'lumotlarni olishda xatolik",
+			Error:   "Buyurtmalarni olishda xatolik",
 		})
 		return
 	}
@@ -1009,14 +1453,37 @@ func GetOrders(c *gin.Context) {
 	var orders []OrderResponse
 	for rows.Next() {
 		var order Order
-		err := rows.Scan(&order.ID, &order.OrderPrice, &order.ClientID, &order.Comment,
-			&order.Status, &order.SentToOrders, &order.CreatedBy, &order.CreatedAt)
+		var smsSentAt sql.NullTime
+		var supplierID sql.NullInt64
+
+		err := rows.Scan(
+			&order.ID,
+			&order.OrderPrice,
+			&order.ClientID,
+			&order.Comment,
+			&order.Status,
+			&order.SentToOrders,
+			&order.CreatedBy,
+			&supplierID,
+			&order.SmsSent,
+			&smsSentAt,
+			&order.CreatedAt,
+		)
+
 		if err != nil {
 			continue
 		}
 
-		orderResp := buildOrderResponse(order)
-		orders = append(orders, orderResp)
+		if smsSentAt.Valid {
+			order.SmsSentAt = &smsSentAt.Time
+		}
+
+		if supplierID.Valid {
+			suppID := int(supplierID.Int64)
+			order.SupplierID = &suppID
+		}
+
+		orders = append(orders, buildOrderResponse(order))
 	}
 
 	c.JSON(http.StatusOK, APIResponse{
@@ -1027,18 +1494,29 @@ func GetOrders(c *gin.Context) {
 
 func GetOrderByID(c *gin.Context) {
 	orderID := c.Param("id")
-	userID, _ := c.Get("userID")
-	role, _ := c.Get("role")
 
 	var order Order
-	err := DB.QueryRow(`
-		SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, created_at 
-		FROM orders 
-		WHERE id = ?`, orderID,
-	).Scan(&order.ID, &order.OrderPrice, &order.ClientID, &order.Comment,
-		&order.Status, &order.SentToOrders, &order.CreatedBy, &order.CreatedAt)
+	var smsSentAt sql.NullTime
+	var supplierID sql.NullInt64
 
-	if err != nil {
+	err := DB.QueryRow(`
+		SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, supplier_id, sms_sent, sms_sent_at, created_at 
+		FROM orders WHERE id = ?`, orderID,
+	).Scan(
+		&order.ID,
+		&order.OrderPrice,
+		&order.ClientID,
+		&order.Comment,
+		&order.Status,
+		&order.SentToOrders,
+		&order.CreatedBy,
+		&supplierID,
+		&order.SmsSent,
+		&smsSentAt,
+		&order.CreatedAt,
+	)
+
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, APIResponse{
 			Success: false,
 			Error:   "Buyurtma topilmadi",
@@ -1046,19 +1524,26 @@ func GetOrderByID(c *gin.Context) {
 		return
 	}
 
-	if role != "admin" && order.CreatedBy != userID.(int) {
-		c.JSON(http.StatusForbidden, APIResponse{
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
 			Success: false,
-			Error:   "Bu buyurtmani ko'rish huquqingiz yo'q",
+			Error:   "Buyurtmani olishda xatolik",
 		})
 		return
 	}
 
-	orderResp := buildOrderResponse(order)
+	if smsSentAt.Valid {
+		order.SmsSentAt = &smsSentAt.Time
+	}
+
+	if supplierID.Valid {
+		suppID := int(supplierID.Int64)
+		order.SupplierID = &suppID
+	}
 
 	c.JSON(http.StatusOK, APIResponse{
 		Success: true,
-		Data:    orderResp,
+		Data:    buildOrderResponse(order),
 	})
 }
 
@@ -1069,12 +1554,12 @@ func UpdateOrderStatus(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Success: false,
-			Error:   "Noto'g'ri ma'lumot",
+			Error:   "Ma'lumotlar to'liq emas",
 		})
 		return
 	}
 
-	validStatuses := []string{"pending", "processing", "delivering", "delivered", "cancelled"}
+	validStatuses := []string{"pending", "confirmed", "preparing", "ready", "delivering", "delivered", "cancelled"}
 	isValid := false
 	for _, status := range validStatuses {
 		if req.Status == status {
@@ -1131,16 +1616,21 @@ func buildOrderResponse(order Order) OrderResponse {
 	}
 
 	var client Client
+	var userIDNull sql.NullInt64
 	DB.QueryRow(`
-		SELECT id, username, number, location, longitude, latitude 
+		SELECT id, username, number, location, longitude, latitude, image_url, user_id 
 		FROM clients WHERE id = ?`, order.ClientID,
-	).Scan(&client.ID, &client.Username, &client.Number, &client.Location, &client.Longitude, &client.Latitude)
+	).Scan(&client.ID, &client.Username, &client.Number, &client.Location, &client.Longitude, &client.Latitude, &client.ImageUrl, &userIDNull)
+
+	if userIDNull.Valid {
+		client.UserID = int(userIDNull.Int64)
+	}
 
 	var creator User
-	DB.QueryRow("SELECT id, phone_number, role FROM users WHERE id = ?", order.CreatedBy).
-		Scan(&creator.ID, &creator.PhoneNumber, &creator.Role)
+	DB.QueryRow("SELECT id, username, phone_number, role FROM users WHERE id = ?", order.CreatedBy).
+		Scan(&creator.ID, &creator.Username, &creator.PhoneNumber, &creator.Role)
 
-	return OrderResponse{
+	response := OrderResponse{
 		ID:         order.ID,
 		Products:   items,
 		OrderPrice: order.OrderPrice,
@@ -1151,17 +1641,271 @@ func buildOrderResponse(order Order) OrderResponse {
 			Location:  client.Location,
 			Longitude: client.Longitude,
 			Latitude:  client.Latitude,
+			ImageUrl:  client.ImageUrl,
 		},
 		Comment:      order.Comment,
 		Status:       order.Status,
 		SentToOrders: order.SentToOrders.Format("2006-01-02T15:04:05Z07:00"),
 		CreatedBy: UserResponse{
 			ID:          creator.ID,
+			Username:    creator.Username,
 			PhoneNumber: creator.PhoneNumber,
 			Role:        creator.Role,
 		},
 		CreatedAt: order.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+
+	// Agar supplier biriktirilgan bo'lsa, uning ma'lumotlarini qo'shish
+	if order.SupplierID != nil {
+		var supplier User
+		err := DB.QueryRow("SELECT id, username, phone_number, role FROM users WHERE id = ?", *order.SupplierID).
+			Scan(&supplier.ID, &supplier.Username, &supplier.PhoneNumber, &supplier.Role)
+		if err == nil {
+			response.Supplier = &UserResponse{
+				ID:          supplier.ID,
+				Username:    supplier.Username,
+				PhoneNumber: supplier.PhoneNumber,
+				Role:        supplier.Role,
+			}
+		}
+	}
+
+	return response
+}
+
+// ========================= SUPPLIER =========================
+
+// Supplier buyurtmani qabul qilishi
+func AcceptOrder(c *gin.Context) {
+	orderID := c.Param("id")
+	userID, _ := c.Get("userId")
+	role, _ := c.Get("role")
+
+	// Faqat supplier qabul qila oladi
+	if role != "supplier" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	// Buyurtma statusini tekshirish
+	var currentStatus string
+	var currentSupplierID sql.NullInt64
+	err := DB.QueryRow("SELECT status, supplier_id FROM orders WHERE id = ?", orderID).
+		Scan(&currentStatus, &currentSupplierID)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Buyurtma topilmadi",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtmani tekshirishda xatolik",
+		})
+		return
+	}
+
+	// Faqat "ready" statusdagi buyurtmalarni qabul qilish mumkin
+	if currentStatus != "ready" {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Faqat tayyor buyurtmalarni qabul qilish mumkin",
+		})
+		return
+	}
+
+	// Agar allaqachon boshqa supplier qabul qilgan bo'lsa
+	if currentSupplierID.Valid {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Bu buyurtma allaqachon boshqa yetkazib beruvchi tomonidan qabul qilingan",
+		})
+		return
+	}
+
+	// Buyurtmani supplierga biriktrish va statusni o'zgartirish
+	result, err := DB.Exec(
+		"UPDATE orders SET supplier_id = ?, status = 'delivering' WHERE id = ?",
+		userID, orderID,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtmani qabul qilishda xatolik",
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Buyurtma topilmadi",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Buyurtma muvaffaqiyatli qabul qilindi",
+	})
+}
+
+// Supplier yetkazib bo'lgandan keyin yetkazildi deb belgilaydi
+func CompleteDelivery(c *gin.Context) {
+	orderID := c.Param("id")
+	userID, _ := c.Get("userId")
+	role, _ := c.Get("role")
+
+	// Faqat supplier bajarishi mumkin
+	if role != "supplier" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	// Buyurtma o'sha supplierga tegishli ekanligini tekshirish
+	var supplierID sql.NullInt64
+	var currentStatus string
+	err := DB.QueryRow("SELECT supplier_id, status FROM orders WHERE id = ?", orderID).
+		Scan(&supplierID, &currentStatus)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Buyurtma topilmadi",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtmani tekshirishda xatolik",
+		})
+		return
+	}
+
+	// Buyurtma shu supplierga tegishli ekanligini tekshirish
+	if !supplierID.Valid || int(supplierID.Int64) != userID.(int) {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Bu buyurtma sizga biriktirilmagan",
+		})
+		return
+	}
+
+	// Statusni yetkazildi qilish
+	result, err := DB.Exec(
+		"UPDATE orders SET status = 'delivered' WHERE id = ?",
+		orderID,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtma statusini yangilashda xatolik",
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Buyurtma topilmadi",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Buyurtma yetkazildi deb belgilandi",
+	})
+}
+
+// GetMyDeliveries - Supplier faqat o'zi qabul qilgan buyurtmalarni ko'radi
+func GetMyDeliveries(c *gin.Context) {
+	userID, _ := c.Get("userId")
+	role, _ := c.Get("role")
+
+	// Faqat supplier chaqira oladi
+	if role != "supplier" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	rows, err := DB.Query(`
+		SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, supplier_id, sms_sent, sms_sent_at, created_at 
+		FROM orders 
+		WHERE supplier_id = ?
+		ORDER BY sent_to_orders DESC, created_at DESC
+	`, userID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtmalarni olishda xatolik",
+		})
+		return
+	}
+	defer rows.Close()
+
+	var orders []OrderResponse
+	for rows.Next() {
+		var order Order
+		var smsSentAt sql.NullTime
+		var supplierID sql.NullInt64
+
+		err := rows.Scan(
+			&order.ID,
+			&order.OrderPrice,
+			&order.ClientID,
+			&order.Comment,
+			&order.Status,
+			&order.SentToOrders,
+			&order.CreatedBy,
+			&supplierID,
+			&order.SmsSent,
+			&smsSentAt,
+			&order.CreatedAt,
+		)
+
+		if err != nil {
+			log.Printf("Row scan error: %v", err)
+			continue
+		}
+
+		if supplierID.Valid {
+			suppID := int(supplierID.Int64)
+			order.SupplierID = &suppID
+		}
+
+		if smsSentAt.Valid {
+			order.SmsSentAt = &smsSentAt.Time
+		}
+
+		orderResponse := buildOrderResponse(order)
+		orders = append(orders, orderResponse)
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Data:    orders,
+	})
 }
 
 // ========================= SMS =========================
@@ -1317,11 +2061,18 @@ func MarkSMSSent(c *gin.Context) {
 // ========================= ROUTES =========================
 
 func SetupRoutes(router *gin.Engine) {
+	// Static fayllar uchun (rasmlar)
+	router.Static("/uploads", "./uploads")
+
 	api := router.Group("/api")
+
+	// Upload endpoint (authentication kerak emas)
+	api.POST("/upload", UploadImage)
 
 	auth := api.Group("/auth")
 	{
 		auth.POST("/login", Login)
+		auth.POST("/register", Register)
 		auth.POST("/create-admin", AuthMiddleware(), AdminOnly(), CreateUser)
 	}
 
@@ -1350,6 +2101,11 @@ func SetupRoutes(router *gin.Engine) {
 		orders.POST("", CreateOrder)
 		orders.GET("/:id", GetOrderByID)
 		orders.PATCH("/:id/status", AdminOnly(), UpdateOrderStatus)
+
+		// Supplier uchun
+		orders.GET("/my-deliveries", GetMyDeliveries)
+		orders.POST("/:id/accept", AcceptOrder)
+		orders.POST("/:id/complete", CompleteDelivery)
 	}
 
 	sms := api.Group("/sms")
