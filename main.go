@@ -1908,6 +1908,369 @@ func GetMyDeliveries(c *gin.Context) {
 	})
 }
 
+// ========================= USERS MANAGEMENT =========================
+
+func GetAllUsers(c *gin.Context) {
+	role, _ := c.Get("role")
+
+	if role != "admin" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	rows, err := DB.Query(`
+		SELECT id, username, phone_number, role, created_at 
+		FROM users 
+		ORDER BY created_at DESC
+	`)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchilarni olishda xatolik",
+		})
+		return
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		err := rows.Scan(
+			&user.ID,
+			&user.Username,
+			&user.PhoneNumber,
+			&user.Role,
+			&user.CreatedAt,
+		)
+
+		if err != nil {
+			log.Printf("Row scan error: %v", err)
+			continue
+		}
+
+		users = append(users, user)
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Data:    users,
+	})
+}
+
+func GetUserByID(c *gin.Context) {
+	userID := c.Param("id")
+	role, _ := c.Get("role")
+
+	if role != "admin" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	var user User
+	err := DB.QueryRow(
+		"SELECT id, username, phone_number, role, created_at FROM users WHERE id = ?",
+		userID,
+	).Scan(&user.ID, &user.Username, &user.PhoneNumber, &user.Role, &user.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchi topilmadi",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchini olishda xatolik",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Data:    user,
+	})
+}
+
+func UpdateUser(c *gin.Context) {
+	userID := c.Param("id")
+	role, _ := c.Get("role")
+
+	if role != "admin" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	var req struct {
+		Username    string `json:"username"`
+		PhoneNumber string `json:"phoneNumber"`
+		Password    string `json:"password"`
+		Role        string `json:"role"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Ma'lumotlar to'liq emas",
+		})
+		return
+	}
+
+	validRoles := []string{"admin", "operator", "user", "supplier", "client"}
+	isValidRole := false
+	for _, r := range validRoles {
+		if req.Role == r {
+			isValidRole = true
+			break
+		}
+	}
+
+	if !isValidRole {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "Noto'g'ri rol qiymati",
+		})
+		return
+	}
+
+	var existingUser User
+	err := DB.QueryRow("SELECT id, username, phone_number, role FROM users WHERE id = ?", userID).
+		Scan(&existingUser.ID, &existingUser.Username, &existingUser.PhoneNumber, &existingUser.Role)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchi topilmadi",
+		})
+		return
+	}
+
+	if req.Password != "" {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Parolni shifrlashda xatolik",
+			})
+			return
+		}
+
+		result, err := DB.Exec(
+			"UPDATE users SET username = ?, phone_number = ?, password = ?, role = ? WHERE id = ?",
+			req.Username, req.PhoneNumber, string(hashedPassword), req.Role, userID,
+		)
+
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				c.JSON(http.StatusConflict, APIResponse{
+					Success: false,
+					Error:   "Bu telefon raqam allaqachon ro'yxatdan o'tgan",
+				})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Foydalanuvchini yangilashda xatolik",
+			})
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
+			c.JSON(http.StatusNotFound, APIResponse{
+				Success: false,
+				Error:   "Foydalanuvchi topilmadi",
+			})
+			return
+		}
+	} else {
+		result, err := DB.Exec(
+			"UPDATE users SET username = ?, phone_number = ?, role = ? WHERE id = ?",
+			req.Username, req.PhoneNumber, req.Role, userID,
+		)
+
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				c.JSON(http.StatusConflict, APIResponse{
+					Success: false,
+					Error:   "Bu telefon raqam allaqachon ro'yxatdan o'tgan",
+				})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, APIResponse{
+				Success: false,
+				Error:   "Foydalanuvchini yangilashda xatolik",
+			})
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
+			c.JSON(http.StatusNotFound, APIResponse{
+				Success: false,
+				Error:   "Foydalanuvchi topilmadi",
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Foydalanuvchi muvaffaqiyatli yangilandi",
+		Data: map[string]interface{}{
+			"id":          userID,
+			"username":    req.Username,
+			"phoneNumber": req.PhoneNumber,
+			"role":        req.Role,
+		},
+	})
+}
+
+func DeleteUser(c *gin.Context) {
+	userID := c.Param("id")
+	role, _ := c.Get("role")
+	currentUserID, _ := c.Get("userId")
+
+	if role != "admin" {
+		c.JSON(http.StatusForbidden, APIResponse{
+			Success: false,
+			Error:   "Sizda bu amalni bajarish uchun ruxsat yo'q",
+		})
+		return
+	}
+
+	if fmt.Sprintf("%d", currentUserID) == userID {
+		c.JSON(http.StatusBadRequest, APIResponse{
+			Success: false,
+			Error:   "O'zingizni o'chira olmaysiz",
+		})
+		return
+	}
+
+	var existingRole string
+	err := DB.QueryRow("SELECT role FROM users WHERE id = ?", userID).Scan(&existingRole)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchi topilmadi",
+		})
+		return
+	}
+
+	if existingRole == "client" {
+		DB.Exec("DELETE FROM clients WHERE user_id = ?", userID)
+	}
+
+	result, err := DB.Exec("DELETE FROM users WHERE id = ?", userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchini o'chirishda xatolik",
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, APIResponse{
+			Success: false,
+			Error:   "Foydalanuvchi topilmadi",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Foydalanuvchi muvaffaqiyatli o'chirildi",
+	})
+}
+
+// ========================= UPCOMING DELIVERIES =========================
+
+func GetUpcomingDeliveries(c *gin.Context) {
+	hoursParam := c.DefaultQuery("hours", "2")
+	
+	hours := 2
+	fmt.Sscanf(hoursParam, "%d", &hours)
+
+	now := time.Now()
+	upcoming := now.Add(time.Duration(hours) * time.Hour)
+
+	rows, err := DB.Query(`
+		SELECT id, order_price, client_id, comment, status, sent_to_orders, created_by, supplier_id, sms_sent, sms_sent_at, created_at 
+		FROM orders 
+		WHERE sent_to_orders BETWEEN ? AND ?
+		AND status NOT IN ('delivered', 'cancelled')
+		ORDER BY sent_to_orders ASC
+	`, now.Format("2006-01-02 15:04:05"), upcoming.Format("2006-01-02 15:04:05"))
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Buyurtmalarni olishda xatolik",
+		})
+		return
+	}
+	defer rows.Close()
+
+	var orders []OrderResponse
+	for rows.Next() {
+		var order Order
+		var smsSentAt sql.NullTime
+		var supplierID sql.NullInt64
+
+		err := rows.Scan(
+			&order.ID,
+			&order.OrderPrice,
+			&order.ClientID,
+			&order.Comment,
+			&order.Status,
+			&order.SentToOrders,
+			&order.CreatedBy,
+			&supplierID,
+			&order.SmsSent,
+			&smsSentAt,
+			&order.CreatedAt,
+		)
+
+		if err != nil {
+			log.Printf("Row scan error: %v", err)
+			continue
+		}
+
+		if supplierID.Valid {
+			suppID := int(supplierID.Int64)
+			order.SupplierID = &suppID
+		}
+
+		if smsSentAt.Valid {
+			order.SmsSentAt = &smsSentAt.Time
+		}
+
+		orderResponse := buildOrderResponse(order)
+		orders = append(orders, orderResponse)
+	}
+
+	c.JSON(http.StatusOK, APIResponse{
+		Success: true,
+		Data:    orders,
+		Message: fmt.Sprintf("Kelgusi %d soat ichida yetkazilishi kerak bo'lgan buyurtmalar", hours),
+	})
+}
+
 // ========================= SMS =========================
 
 func GetPendingSMS(c *gin.Context) {
@@ -2113,6 +2476,23 @@ func SetupRoutes(router *gin.Engine) {
 	{
 		sms.GET("/pending", GetPendingSMS)
 		sms.POST("/sent/:phone", MarkSMSSent)
+	}
+
+	// Users management (faqat admin)
+	users := api.Group("/users")
+	users.Use(AuthMiddleware(), AdminOnly())
+	{
+		users.GET("", GetAllUsers)
+		users.GET("/:id", GetUserByID)
+		users.PUT("/:id", UpdateUser)
+		users.DELETE("/:id", DeleteUser)
+	}
+
+	// Upcoming deliveries
+	deliveries := api.Group("/deliveries")
+	deliveries.Use(AuthMiddleware())
+	{
+		deliveries.GET("/upcoming", GetUpcomingDeliveries)
 	}
 
 	router.GET("/health", func(c *gin.Context) {
