@@ -402,8 +402,13 @@ func UploadImage(c *gin.Context) {
 		".jpg":  true,
 		".jpeg": true,
 		".png":  true,
+		".heic": true,
+		".heif": true,
 		".gif":  true,
 		".webp": true,
+		".tiff": true,
+		".tif":  true,
+		".bmp":  true,
 	}
 
 	if !allowedExts[ext] {
@@ -1091,7 +1096,7 @@ func DeleteClient(c *gin.Context) {
 
 	// Avval client'ning user_id sini olish
 	var userIDNull sql.NullInt64
-	err := DB.QueryRow("SELECT user_id FROM clients WHERE id = ?", clientID).Scan(&userIDNull)
+	// err := DB.QueryRow("SELECT user_id FROM clients WHERE id = ?", clientID).Scan(&userIDNull)
 
 	// Client o'chirish
 	result, err := DB.Exec("DELETE FROM clients WHERE id = ?", clientID)
@@ -2202,7 +2207,7 @@ func DeleteUser(c *gin.Context) {
 
 func GetUpcomingDeliveries(c *gin.Context) {
 	hoursParam := c.DefaultQuery("hours", "2")
-	
+
 	hours := 2
 	fmt.Sscanf(hoursParam, "%d", &hours)
 
