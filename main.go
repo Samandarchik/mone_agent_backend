@@ -267,7 +267,7 @@ func InitDB() error {
 
 func CreateDefaultAdmin() error {
 	var count int
-	err := DB.QueryRow("SELECT COUNT(*) FROM users WHERE phone_number = ?", "+998901234567").Scan(&count)
+	err := DB.QueryRow("SELECT COUNT(*) FROM users WHERE phone_number = ?", "+998904611101").Scan(&count)
 	if err != nil {
 		return err
 	}
@@ -276,7 +276,7 @@ func CreateDefaultAdmin() error {
 		return nil
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("293"), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
@@ -284,7 +284,7 @@ func CreateDefaultAdmin() error {
 	_, err = DB.Exec(
 		"INSERT INTO users (username, phone_number, password, role) VALUES (?, ?, ?, ?)",
 		"Admin",
-		"+998901234567",
+		"+998904611101",
 		string(hashedPassword),
 		"admin",
 	)
@@ -305,8 +305,15 @@ type TelegramMessage struct {
 	ParseMode string `json:"parse_mode"`
 }
 
-func SendTelegramNotification(orderID string, client Client, products []OrderItemResponse, orderPrice float64, sentToOrders time.Time, comment string) error {
-	// Mahsulotlar ro'yxatini yaratish
+func SendTelegramNotification(
+	orderID string,
+	client Client,
+	products []OrderItemResponse,
+	orderPrice float64,
+	sentToOrders time.Time,
+	comment string,
+) error {
+	// 🛒 1. Mahsulotlar ro‘yxatini tayyorlash
 	var productsList string
 	for _, p := range products {
 		itemTotal := p.ProductPrice * float64(p.ProductCount)
@@ -314,10 +321,10 @@ func SendTelegramNotification(orderID string, client Client, products []OrderIte
 			p.ProductName, p.ProductCount, p.ProductPrice, itemTotal)
 	}
 
-	// Yetkazish vaqti
+	// 🕐 2. Yetkazish vaqtini formatlash
 	deliveryTime := sentToOrders.Format("2-January soat 15:04")
 
-	// Telegram xabari
+	// 💬 3. Telegram xabar matnini tayyorlash
 	message := fmt.Sprintf(
 		"🆕 *YANGI BUYURTMA!*\n\n"+
 			"📋 Buyurtma ID: `%s`\n"+
@@ -358,6 +365,7 @@ func SendTelegramNotification(orderID string, client Client, products []OrderIte
 		)
 	}
 
+	// 📤 4. Telegramga yuborish
 	telegramMsg := TelegramMessage{
 		ChatID:    TelegramChatID,
 		Text:      message,
@@ -381,7 +389,55 @@ func SendTelegramNotification(orderID string, client Client, products []OrderIte
 		return fmt.Errorf("telegram API error: %s", string(body))
 	}
 
+	// 🖨️ 5. Printerga yuborish
+	orderForPrinter := OrderResponse{
+		ID: orderID,
+		Client: ClientResponse{
+			ID:        client.ID,
+			Username:  client.Username,
+			Number:    client.Number,
+			Location:  client.Location,
+			Longitude: client.Longitude,
+			Latitude:  client.Latitude,
+			ImageUrl:  client.ImageUrl,
+		},
+		SentToOrders: sentToOrders.Format("2006-01-02 15:04"),
+		Products:     products,
+		OrderPrice:   orderPrice,
+		Comment:      comment,
+	}
+
+	SendToPrinter(orderForPrinter)
+
 	return nil
+}
+func SendToPrinter(order OrderResponse) {
+
+	printerURL := "https://marxabo1.javohir-jasmina.uz/restoran"
+
+	jsonData, err := json.Marshal(order)
+	if err != nil {
+		fmt.Println("❌ JSON marshal xato:", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("POST", printerURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("❌ So‘rov yaratishda xato:", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("❌ Printerga yuborishda xato:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	fmt.Println("✅ Buyurtma printerga yuborildi:", resp.Status)
 }
 
 // ========================= FILE UPLOAD =========================
